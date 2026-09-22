@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Zotero Prism Bridge",
+  "version": "1.0.0",
+  "description": "Answer Zotero Prism's questions with a web chat you already have open.",
+  "permissions": ["storage", "scripting", "activeTab"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://www.doubao.com/*",
+    "https://kimi.moonshot.cn/*",
+    "https://www.kimi.com/*",
+    "https://chat.deepseek.com/*",
+    "https://chat.qwen.ai/*",
+    "https://tongyi.aliyun.com/*",
+    "https://yuanbao.tencent.com/*",
+    "https://chatglm.cn/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": { "default_popup": "popup.html", "default_title": "Zotero Prism Bridge" }
+}

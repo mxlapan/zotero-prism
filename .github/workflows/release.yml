@@ -1,0 +1,88 @@
+# Publishes a release when a version tag is pushed.
+#
+#   npm run release        # choose the new version; commits, tags vX.Y.Z and pushes
+#
+# The tag must match the version in package.json. A version with a hyphen
+# (1.2.0-beta.1) is published as a pre-release and only reaches beta users.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      XPI: .scaffold/build/zotero-prism.xpi
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Check the tag against package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match version $version in package.json"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Write the release notes
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)
+          if [ -z "$previous" ]; then
+            changes='- 首个公开版本'
+          else
+            changes=$(git log --no-merges --format='- %s' "$previous..$TAG" | grep -v '^- chore(publish):' || true)
+          fi
+          {
+            echo '### 更新内容'
+            echo
+            echo "${changes:-- 维护更新}"
+            if [ -n "$previous" ]; then
+              echo
+              echo "完整变更：https://github.com/$GITHUB_REPOSITORY/compare/$previous...$TAG"
+            fi
+            echo
+            echo '### 安装'
+            echo
+            echo "安装方法见 [README](https://github.com/$GITHUB_REPOSITORY#安装)。"
+            echo
+            echo "SHA-256（zotero-prism.xpi）：\`$(sha256sum "$XPI" | cut -d' ' -f1)\`"
+          } > notes.md
+          cat notes.md
+
+      - name: Publish the release
+        run: |
+          if [[ "$TAG" == *-* ]]; then flags=(--prerelease --latest=false); else flags=(--latest); fi
+          gh release create "$TAG" "$XPI" --verify-tag \
+            --title "Zotero Prism $TAG" --notes-file notes.md "${flags[@]}"
+
+      # Installed copies look for updates at releases/download/release/update.json
+      # (update-beta.json for pre-releases); see updateURL in zotero-plugin.config.ts.
+      - name: Update the update manifest
+        run: |
+          if ! gh release view release > /dev/null 2>&1; then
+            gh release create release --target "$GITHUB_SHA" --latest=false \
+              --title "自动更新清单" \
+              --notes "供 Zotero 检查插件更新使用，请勿删除。安装包请从带版本号的发布中下载。"
+          fi
+          gh release upload release .scaffold/build/update*.json --clobber

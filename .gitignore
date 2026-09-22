@@ -1,0 +1,7 @@
+node_modules/
+.scaffold/
+addon/content/vendor/
+*.log
+.env
+tsconfig.tsbuildinfo
+.probe.sh

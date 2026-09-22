@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px/1.5 system-ui, sans-serif; width: 260px; margin: 0; padding: 12px; }
+      h1 { font-size: 13px; margin: 0 0 8px; }
+      button { width: 100%; padding: 6px; border-radius: 7px; border: 1px solid #ccc;
+               background: #2ea8e5; color: #fff; cursor: pointer; font: inherit; }
+      button.secondary { background: transparent; color: inherit; }
+      input { width: 100%; box-sizing: border-box; padding: 5px; border-radius: 6px;
+              border: 1px solid #ccc; margin-bottom: 8px; font: inherit; }
+      .status { margin: 8px 0; opacity: .75; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #24262b; color: #e9eaee; }
+        input, button.secondary { border-color: #46484d; background: #2e3036; color: #e9eaee; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Zotero Prism Bridge</h1>
+    <input id="endpoint" placeholder="http://127.0.0.1:23119" />
+    <button id="toggle">Connect this tab</button>
+    <div class="status" id="status">checking…</div>
+    <script src="popup.js"></script>
+  </body>
+</html>

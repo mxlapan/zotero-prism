@@ -1,0 +1,315 @@
+<vbox id="prism-prefs-root" onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })">
+  <html:link rel="stylesheet" href="chrome://__addonRef__/content/styles/prism.css" />
+
+  <html:div class="prism-root" style="display:flex;flex-direction:column;gap:6px">
+    <html:div id="prism-tabs" class="prism-row" style="flex-wrap:wrap;margin-bottom:4px"></html:div>
+
+    <!-- ============================================================ general -->
+    <html:section data-prism-tab="general">
+      <groupbox>
+        <html:h2>Zotero Prism</html:h2>
+        <html:div class="prism-stat-label" id="prism-about"></html:div>
+        <checkbox preference="enableSpectrum" label="Library visuals — columns, heat map, panes" data-zh-label="文库可视化（列、阅读热力、条目面板）" />
+        <checkbox preference="enableLens" label="AI copilot" data-zh-label="AI 助手" />
+        <checkbox preference="enableRefract" label="Translation" data-zh-label="翻译" />
+        <checkbox preference="enableBeam" label="Reading rhythm, review, radar, watchlist" data-zh-label="阅读管理（阅读节律、标注复习、引文缺口、新文追踪）" />
+        <html:div id="prism-shortcuts" class="prism-kv" style="margin-top:8px"></html:div>
+      </groupbox>
+    </html:section>
+
+    <!-- ================================================================= AI -->
+    <html:section data-prism-tab="ai" hidden="true">
+      <groupbox>
+        <html:h2 data-zh="对话模型">Chat model</html:h2>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="接口类型">Provider</html:label>
+          <menulist preference="lens.provider" native="true">
+            <menupopup>
+              <menuitem label="OpenAI compatible" data-zh-label="OpenAI 兼容" value="openai" />
+              <menuitem label="Anthropic" value="anthropic" />
+            </menupopup>
+          </menulist>
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="接口地址">Base URL</html:label>
+          <html:input type="text" preference="lens.baseURL" style="flex:1"
+            placeholder="https://api.openai.com" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="API 密钥">API key</html:label>
+          <html:input type="password" preference="lens.apiKey" style="flex:1" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="模型">Model</html:label>
+          <html:input type="text" preference="lens.model" style="flex:1" id="prism-model-input" />
+          <html:button id="prism-model-list" class="prism-btn" data-zh="获取列表">Fetch list</html:button>
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="温度">Temperature</html:label>
+          <html:input type="number" min="0" max="2" step="0.1" preference="lens.temperature" style="width:90px" />
+          <html:label style="margin-inline-start:16px" data-zh="最大 tokens">Max tokens</html:label>
+          <html:input type="number" min="256" max="200000" step="256" preference="lens.maxTokens" style="width:110px" />
+        </hbox>
+        <checkbox preference="lens.fullURL" label="Base URL is the complete endpoint (do not append /v1/chat/completions)" data-zh-label="接口地址为完整端点（不自动追加 /v1/chat/completions）" />
+        <checkbox preference="lens.stream" label="Stream responses" data-zh-label="流式输出" />
+        <hbox align="center">
+          <html:button id="prism-test" class="prism-btn prism-btn-primary" data-zh="测试连接">Test connection</html:button>
+          <html:button id="prism-profile-save" class="prism-btn" data-zh="保存为配置">Save as profile</html:button>
+          <menulist id="prism-profiles" native="true"><menupopup /></menulist>
+          <html:button id="prism-profile-delete" class="prism-btn" data-zh="删除">Delete</html:button>
+        </hbox>
+        <html:div id="prism-test-result" class="prism-stat-label"></html:div>
+      </groupbox>
+
+      <groupbox>
+        <html:h2 data-zh="系统提示词">System prompt</html:h2>
+        <html:textarea preference="lens.systemPrompt" rows="3" style="width:100%"></html:textarea>
+        <checkbox preference="lens.provenance" label="Record model, prompt and sources when saving an answer to a note" data-zh-label="将回答保存为笔记时，记录所用模型、提示词与来源" />
+        <checkbox preference="lens.annotationWriteBack" label="Also store reader answers as PDF annotations" data-zh-label="同时将阅读器中的回答保存为 PDF 标注" />
+      </groupbox>
+
+      <groupbox>
+        <html:h2 data-zh="语义检索">Semantic search</html:h2>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="Embedding 地址">Embedding URL</html:label>
+          <html:input type="text" preference="lens.embedBaseURL" style="flex:1"
+            placeholder="https://api.openai.com/v1/embeddings" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="Embedding 密钥">Embedding key</html:label>
+          <html:input type="password" preference="lens.embedApiKey" style="flex:1" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="Embedding 模型">Embedding model</html:label>
+          <html:input type="text" preference="lens.embedModel" style="flex:1" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="分块 / 重叠 / topK">Chunk / overlap / topK</html:label>
+          <html:input type="number" preference="lens.chunkSize" style="width:90px" />
+          <html:input type="number" preference="lens.chunkOverlap" style="width:90px" />
+          <html:input type="number" preference="lens.topK" style="width:70px" />
+        </hbox>
+        <hbox align="center">
+          <html:button id="prism-index-build" class="prism-btn prism-btn-primary" data-zh="为选中条目建立索引">Index selected items</html:button>
+          <html:button id="prism-index-all" class="prism-btn" data-zh="为整个文库建立索引">Index whole library</html:button>
+          <html:button id="prism-index-clear" class="prism-btn" data-zh="清空索引">Clear index</html:button>
+        </hbox>
+        <html:div id="prism-index-stats" class="prism-stat-label"></html:div>
+      </groupbox>
+
+      <groupbox>
+        <html:h2 data-zh="网页联动">Web chat linkage</html:h2>
+        <html:div class="prism-stat-label" data-lang="en">
+          Answer through a chat site you already have open, with no API key. Install the
+          companion browser add-on, open the site, and press Connect.
+        </html:div>
+        <html:div class="prism-stat-label" data-lang="zh" hidden="true">
+          无需 API 密钥，借助已登录的网页版对话服务回答问题。安装配套的浏览器扩展，打开对应网站后点击「Connect」即可。
+        </html:div>
+        <checkbox preference="lens.bridgeEnabled" label="Prefer the connected web chat over the API" data-zh-label="优先使用已连接的网页版对话，而非 API" />
+        <hbox align="center">
+          <html:button id="prism-bridge-reveal" class="prism-btn" data-zh="打开扩展所在文件夹">Show add-on folder</html:button>
+          <html:span id="prism-bridge-status" class="prism-chip" data-zh="未连接">not connected</html:span>
+        </hbox>
+      </groupbox>
+
+      <groupbox>
+        <html:h2 data-zh="提示词与命令标签">Prompts and command tags</html:h2>
+        <html:div id="prism-prompt-list" class="prism-list" style="max-height:260px"></html:div>
+        <hbox align="center">
+          <html:button id="prism-prompt-add" class="prism-btn" data-zh="添加提示词">Add prompt</html:button>
+          <html:button id="prism-prompt-reset" class="prism-btn" data-zh="恢复默认">Reset to defaults</html:button>
+        </hbox>
+      </groupbox>
+    </html:section>
+
+    <!-- ======================================================== translation -->
+    <html:section data-prism-tab="translate" hidden="true">
+      <groupbox>
+        <html:h2 data-zh="翻译引擎">Engine</html:h2>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="引擎">Engine</html:label>
+          <menulist id="prism-engine" preference="refract.engine" native="true"><menupopup /></menulist>
+          <html:label style="margin-inline-start:16px" data-zh="目标语言">Target</html:label>
+          <menulist id="prism-lang" preference="refract.targetLang" native="true"><menupopup /></menulist>
+          <html:label style="margin-inline-start:16px" data-zh="源语言">Source</html:label>
+          <menulist id="prism-source-lang" preference="refract.sourceLang" native="true"><menupopup /></menulist>
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="对照笔记粒度">Bilingual note unit</html:label>
+          <menulist id="prism-alignment" preference="refract.alignment" native="true"><menupopup /></menulist>
+        </hbox>
+        <html:div id="prism-engine-keys" style="display:flex;flex-direction:column;gap:4px"></html:div>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="并发数">Concurrency</html:label>
+          <html:input type="number" min="1" max="16" preference="refract.concurrency" style="width:70px" />
+        </hbox>
+        <checkbox preference="refract.keepFormulas" label="Leave equations and formulas untranslated" data-zh-label="跳过公式" />
+        <checkbox preference="refract.bodyOnly" label="Translate the article only (skip running heads, addresses, tables)" data-zh-label="仅译正文（跳过页眉页脚、地址、表格等）" />
+        <checkbox preference="refract.skipReferences" label="Skip the reference list" data-zh-label="跳过参考文献" />
+        <checkbox preference="refract.skipCaptions" label="Skip figure and table captions" data-zh-label="跳过图表标题" />
+        <checkbox preference="refract.hoverOriginal" label="Show the original on hover" data-zh-label="鼠标悬停时显示原文" />
+        <checkbox preference="refract.selectionPopup" label="Show the Prism popup when text is selected in the reader" data-zh-label="在阅读器中选中文字时显示棱镜弹窗" />
+        <checkbox preference="refract.cacheEnabled" label="Cache translations on disk" data-zh-label="在本地缓存译文" />
+        <checkbox preference="refract.engineFallback" label="Fall back to another free engine when one fails" data-zh-label="引擎出错时改用其他免费引擎" />
+        <checkbox preference="refract.autoTranslateTitle" label="Translate the abstract of newly added items" data-zh-label="自动翻译新添加条目的摘要" />
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="译文字号 / 行距">Overlay font / line</html:label>
+          <html:input type="number" min="8" max="28" preference="refract.fontSize" style="width:80px" />
+          <html:input type="number" min="1" max="2.4" step="0.1" preference="refract.lineHeight" style="width:80px" />
+          <html:input type="text" preference="refract.fontFamily" placeholder="font family" data-zh-placeholder="字体" style="flex:1" />
+        </hbox>
+      </groupbox>
+
+      <groupbox>
+        <html:h2 data-zh="版面重建服务">Layout-preserving service</html:h2>
+        <html:div class="prism-stat-label" data-lang="en">
+          Optional. Sends the PDF to pdf2zh, MinerU or Doc2X and attaches the rebuilt
+          bilingual file to the item.
+        </html:div>
+        <html:div class="prism-stat-label" data-lang="zh" hidden="true">
+          可选。将 PDF 发送至 pdf2zh、MinerU 或 Doc2X，并将重新排版的双语文件附加到条目下。
+        </html:div>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="服务">Service</html:label>
+          <menulist preference="refract.layoutServiceType" native="true">
+            <menupopup>
+              <menuitem label="pdf2zh (self-hosted)" data-zh-label="pdf2zh（自行部署）" value="pdf2zh" />
+              <menuitem label="MinerU" value="mineru" />
+              <menuitem label="Doc2X" value="doc2x" />
+            </menupopup>
+          </menulist>
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="服务地址">Endpoint</html:label>
+          <html:input type="text" preference="refract.layoutService" style="flex:1"
+            placeholder="http://127.0.0.1:11008" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="令牌">Token</html:label>
+          <html:input type="password" preference="refract.layoutServiceKey" style="flex:1" />
+        </hbox>
+      </groupbox>
+    </html:section>
+
+    <!-- ============================================================ library -->
+    <html:section data-prism-tab="library" hidden="true">
+      <groupbox>
+        <html:h2 data-zh="列">Columns</html:h2>
+        <checkbox preference="spectrum.heatmap" label="Reading heat map (column and title background)" data-zh-label="阅读热力（单独一列及标题底色）" />
+        <checkbox preference="spectrum.boldUnread" label="Bold unread items" data-zh-label="未读条目加粗" />
+        <checkbox preference="spectrum.progressColumn" label="Annotation density column" data-zh-label="标注密度列" />
+        <checkbox preference="spectrum.ratingColumn" label="Rating column" data-zh-label="评分列" />
+        <checkbox preference="spectrum.tagsColumn" label="Tags column (every tag, as coloured pills)" data-zh-label="标签列（以彩色标签显示全部标签）" />
+        <checkbox preference="spectrum.hashTagColumn" label="#Tags column (only the tags the rule below picks out)" data-zh-label="#标签列（仅显示符合下方规则的标签）" />
+        <checkbox preference="spectrum.rankColumn" label="Journal rank column" data-zh-label="期刊分区列" />
+        <checkbox preference="spectrum.citedColumn" label="Citation count column" data-zh-label="被引数列" />
+        <html:div class="prism-stat-label" data-lang="en">
+          Toggling a column here takes effect after restarting Zotero. Columns can
+          also be shown or hidden at any time by right-clicking the item list's
+          column header.
+        </html:div>
+        <html:div class="prism-stat-label" data-lang="zh" hidden="true">
+          此处的列开关在重启 Zotero 后生效；也可随时在条目列表的表头上右键，显示或隐藏各列。
+        </html:div>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="热力颜色">Heat colour</html:label>
+          <html:input type="color" preference="spectrum.heatmapColor" style="width:60px" />
+        </hbox>
+      </groupbox>
+      <groupbox>
+        <html:h2 data-zh="标签与分区">Tags and ranks</html:h2>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="#标签规则">#Tag rule</html:label>
+          <html:input type="text" preference="spectrum.hashTagPrefix" style="flex:1"
+            placeholder="# or ~/ or /^#(.+)/" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="#标签映射">#Tag map</html:label>
+          <html:input type="text" preference="spectrum.hashTagMap" style="flex:1"
+            placeholder="from=to, /re/=to," />
+        </hbox>
+        <html:div class="prism-stat-label" data-lang="en">
+          The Tags column shows everything an item carries. The #Tags column shows
+          one slice of it, so the handful of tags you keep yourself stays readable
+          next to the hundreds that arrive with imported metadata — tag your own
+          with a common prefix and only those appear. The rule: <html:b>#</html:b>
+          keeps tags starting with # and drops the # from the display;
+          <html:b>~draft</html:b> keeps everything <html:i>except</html:i> tags
+          starting with "draft"; <html:b>/^CCF-(.+)/</html:b> keeps what the
+          brackets match; empty shows every tag (which makes this column a copy of
+          the one above). #Tag map then renames what is left:
+          <html:b>survey=综述, /^ml$/=machine learning,</html:b>
+        </html:div>
+        <html:div class="prism-stat-label" data-lang="zh" hidden="true">
+          「标签」列显示条目的全部标签，「#标签」列只显示其中一部分：导入元数据时常附带数以百计的关键词，为自建标签加上统一前缀后，这一列便只显示这些标签。规则写法：<html:b>#</html:b> 保留以 # 开头的标签，显示时去掉 #；<html:b>~draft</html:b> 保留除以 draft 开头之外的全部标签；<html:b>/^CCF-(.+)/</html:b> 保留括号所匹配的部分；留空则显示全部标签（与「标签」列相同）。#标签映射用于重命名保留下来的标签，例如 <html:b>survey=综述, /^ml$/=machine learning,</html:b>
+        </html:div>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="分区字段">Rank fields</html:label>
+          <html:input type="text" preference="spectrum.rankFields" style="flex:1" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="分区映射">Rank map</html:label>
+          <html:input type="text" preference="spectrum.rankMap" style="flex:1" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="easyScholar 密钥">easyScholar key</html:label>
+          <html:input type="password" preference="spectrum.easyScholarKey" style="flex:1" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="被引数据源">Citation source</html:label>
+          <menulist id="prism-cited-source" preference="spectrum.citedSource" native="true"><menupopup /></menulist>
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:120px" data-zh="被引映射">Citation map</html:label>
+          <html:input type="text" preference="spectrum.citedMap" style="flex:1" />
+        </hbox>
+        <hbox align="center">
+          <html:button id="prism-colors" class="prism-btn" data-zh="标注颜色命名…">Name annotation colours…</html:button>
+          <html:button id="prism-known-fields" class="prism-btn" data-zh="显示可用的分区字段">Show available rank fields</html:button>
+        </hbox>
+        <html:div id="prism-fields-out" class="prism-stat-label"></html:div>
+      </groupbox>
+    </html:section>
+
+    <!-- ================================================================ lab -->
+    <html:section data-prism-tab="lab" hidden="true">
+      <groupbox>
+        <html:h2 data-zh="阅读节律">Reading rhythm</html:h2>
+        <hbox align="center">
+          <html:label style="width:150px" data-zh="每日目标（分钟）">Daily goal (minutes)</html:label>
+          <html:input type="number" min="5" max="600" preference="beam.rhythmGoalMinutes" style="width:90px" />
+        </hbox>
+      </groupbox>
+      <groupbox>
+        <html:h2 data-zh="标注复习">Annotation review</html:h2>
+        <checkbox preference="beam.review" label="Enrol new annotations automatically" data-zh-label="新标注自动加入复习队列" />
+        <hbox align="center">
+          <html:label style="width:150px" data-zh="每日卡片数">Cards per day</html:label>
+          <html:input type="number" min="1" max="200" preference="beam.reviewDaily" style="width:90px" />
+        </hbox>
+        <hbox align="center">
+          <html:label style="width:150px" data-zh="复习间隔（天）">Interval ladder (days)</html:label>
+          <html:input type="text" preference="beam.reviewIntervals" style="flex:1" />
+        </hbox>
+        <html:div id="prism-deck-stats" class="prism-stat-label"></html:div>
+      </groupbox>
+      <groupbox>
+        <html:h2 data-zh="引文缺口雷达">Citation gap radar</html:h2>
+        <hbox align="center">
+          <html:label style="width:150px" data-zh="最少引用篇数">Minimum citations</html:label>
+          <html:input type="number" min="1" max="50" preference="beam.gapMinHits" style="width:90px" />
+        </hbox>
+      </groupbox>
+      <groupbox>
+        <html:h2 data-zh="新文追踪">Watchlist</html:h2>
+        <hbox align="center">
+          <html:label style="width:150px" data-zh="检查间隔（小时）">Check every (hours)</html:label>
+          <html:input type="number" min="1" max="720" preference="beam.watchIntervalHours" style="width:90px" />
+          <html:button id="prism-watch-run" class="prism-btn" data-zh="立即检查">Run now</html:button>
+        </hbox>
+        <html:div id="prism-watch-list" class="prism-list" style="max-height:220px"></html:div>
+      </groupbox>
+    </html:section>
+  </html:div>
+</vbox>

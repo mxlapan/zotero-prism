@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <style>
+    :root { color: #6f737a; }
+    @media (prefers-color-scheme: dark) { :root { color: #c7cace; } }
+    .s { fill: none; stroke: currentColor; stroke-width: 1.25;
+         stroke-linecap: round; stroke-linejoin: round; }
+  </style>
+  <path class="s" d="M7.6 2.4 12.4 13.2H2.8Z"/>
+  <path class="s" d="M0.4 8.2h4.3"/>
+  <path class="s" d="M11 10.2h4.6"/>
+</svg>

@@ -1,0 +1,614 @@
+/**
+ * "AI applications" — the one-click actions that turn a model answer into
+ * something durable in Zotero: a note, a set of highlights, an outline with
+ * working page links, or a markdown bird's-eye view on disk.
+ */
+
+import { config } from "../../../package.json";
+import { chat } from "./provider";
+import { BUILTIN_PROMPTS, FORMULAS, interpolate, replyLanguage, type PromptDef } from "./prompts";
+import { markdownToNoteHTML, noteHTMLToMarkdown } from "../../lib/markdown";
+import {
+  bestAttachment,
+  createChildNote,
+  currentReader,
+  getFullText,
+  getPageTexts,
+  itemAnnotations,
+  metaBlock,
+  readerAttachment,
+  toRegularItem,
+  itemCitation,
+  revealNotes,
+} from "../../utils/item";
+import { bi } from "../../utils/locale";
+import { clampTokens, escapeHTML } from "../../utils/text";
+import { getPref } from "../../utils/prefs";
+import { readerPageIndex } from "./readerPane";
+import { pageCount, pageText, pageViews, pdfReady } from "../../utils/reader";
+import { openProgress } from "../../utils/progress";
+
+function progress(title: string) {
+  return openProgress(title);
+}
+
+function builtin(id: string): PromptDef {
+  return BUILTIN_PROMPTS.find((p) => p.id === id)!;
+}
+
+/* ------------------------------------------------------------------ summary */
+
+export async function aiSummary(items: Zotero.Item[]) {
+  const window = progress(bi("Summarising…", "正在总结…"));
+  const notes: Zotero.Item[] = [];
+  let done = 0;
+  for (const item of items) {
+    const target = toRegularItem(item);
+    if (!target) continue;
+    window.changeLine({
+      text: `${++done}/${items.length} ${String(target.getField("title")).slice(0, 40)}`,
+      progress: (done / items.length) * 100,
+    });
+    try {
+      const body = builtin("summarize").body;
+      const prompt = `${await interpolate(body, { item: target })}${replyLanguage(body, {})}\n\n${FORMULAS}`;
+      const answer = await chat([{ role: "user", content: prompt }]);
+      const note = await createChildNote(
+        target,
+        [
+          `<h2>${bi("Prism summary", "棱镜总结")} — ${escapeHTML(
+            String(target.getField("title") || ""),
+          )}</h2>`,
+          markdownToNoteHTML(answer),
+          provenanceFooter(),
+        ].join("\n"),
+        "prism/summary",
+      );
+      notes.push(note);
+    } catch (e) {
+      Zotero.debug(`[Prism] summary failed: ${e}`);
+      window.createLine({ text: `${bi("Failed: ", "失败：")}${e}`, type: "fail" });
+    }
+  }
+  window.changeLine({ text: bi("Summaries written", "总结已写入笔记"), progress: 100 });
+  window.startCloseTimer(3000);
+  await revealNotes(notes);
+}
+
+/* ------------------------------------------------------------------ outline */
+
+export async function aiOutline(items: Zotero.Item[]) {
+  const window = progress(bi("Building outlines…", "正在生成大纲…"));
+  const notes: Zotero.Item[] = [];
+  let done = 0;
+  for (const item of items) {
+    const target = toRegularItem(item);
+    if (!target) continue;
+    window.changeLine({
+      text: `${++done}/${items.length}`,
+      progress: (done / items.length) * 100,
+    });
+    try {
+      const body = builtin("outline").body;
+      const prompt = `${await interpolate(body, { item: target })}${replyLanguage(body, {})}\n\n${FORMULAS}`;
+      const answer = await chat([{ role: "user", content: prompt }]);
+      const attachment = await bestAttachment(target);
+      const html = linkifyPages(markdownToNoteHTML(answer), attachment);
+      const note = await createChildNote(
+        target,
+        [
+          `<h2>${bi("Prism outline", "棱镜大纲")}</h2>`,
+          html,
+          provenanceFooter(),
+        ].join("\n"),
+        "prism/outline",
+      );
+      notes.push(note);
+    } catch (e) {
+      window.createLine({ text: `${bi("Failed: ", "失败：")}${e}`, type: "fail" });
+    }
+  }
+  window.changeLine({ text: bi("Outlines written", "大纲已写入笔记"), progress: 100 });
+  window.startCloseTimer(3000);
+  await revealNotes(notes);
+}
+
+/**
+ * Turn "(p. 12)" markers into links that open the PDF at that page. A Chinese
+ * answer writes them with full-width brackets, "（p. 12）", as often as not.
+ */
+export function linkifyPages(html: string, attachment: Zotero.Item | null): string {
+  if (!attachment) return html;
+  return html.replace(
+    // a range, "(p. 2–3)" or "(pp. 4-5)", opens at its first page; models
+    // write the dash as any of hyphen, en/em dash, minus or non-breaking hyphen
+    /[(（]pp?\.?\s*(\d{1,4})(?:\s*[\u2010-\u2015\u2212~-]\s*(\d{1,4}))?[)）]/gi,
+    (_m, page, last) =>
+      `(<a href="zotero://open-pdf/library/items/${attachment.key}?page=${page}">p. ${page}${
+        last ? `–${last}` : ""
+      }</a>)`,
+  );
+}
+
+function provenanceFooter(): string {
+  if (!getPref<boolean>("lens.provenance", true)) return "";
+  const model = getPref<string>("lens.model", "");
+  return `<hr/><p style="color:#888;font-size:0.85em">${bi(
+    "Generated by Zotero Prism",
+    "由 Zotero Prism 生成",
+  )} · ${escapeHTML(model)} · ${new Date().toLocaleString()}</p>`;
+}
+
+/* --------------------------------------------------------------- annotation */
+
+interface AnnotationPlan {
+  page: number;
+  quote: string;
+  comment: string;
+  importance?: number;
+}
+
+/**
+ * Ask the model which sentences matter, then place real highlights on them.
+ * Sentences we cannot locate in the page text become page-anchored notes, so
+ * nothing the model produced is silently dropped.
+ */
+export async function aiAnnotate(
+  item: Zotero.Item,
+  options: { maxPerPage?: number; color?: string } = {},
+) {
+  const target = toRegularItem(item);
+  if (!target) return;
+  const attachment = await bestAttachment(target);
+  if (!attachment) {
+    throw new Error(bi("No PDF attachment found.", "未找到 PDF 附件。"));
+  }
+  const window = progress(bi("Reading the PDF…", "正在读取 PDF…"));
+  const pages = await getPageTexts(target);
+  if (!pages.length) {
+    window.changeLine({ text: bi("No extractable text.", "无法提取文本。"), type: "fail" });
+    window.startCloseTimer(3000);
+    return;
+  }
+
+  const maxPerPage = options.maxPerPage ?? 2;
+  const plans: AnnotationPlan[] = [];
+  const batchSize = 6;
+  for (let start = 0; start < pages.length; start += batchSize) {
+    const batch = pages.slice(start, start + batchSize);
+    window.changeLine({
+      text: `${bi("Analysing pages", "正在分析页面")} ${start + 1}-${start + batch.length}/${pages.length}`,
+      progress: (start / pages.length) * 100,
+    });
+    const body = batch
+      .map((text, i) => `--- PAGE ${start + i + 1} ---\n${clampTokens(text, 2200)}`)
+      .join("\n\n");
+    const instruction = `You are marking up a paper for a researcher. For each page below choose at most ${maxPerPage} sentences that carry the real content (a claim, a number, a definition, a limitation). Skip boilerplate, headers and references.
+
+Reply as a JSON array only, no prose:
+[{"page": <page number as printed above>, "quote": "<the sentence copied EXACTLY from the page>", "comment": "<one short line on why it matters>"}]
+
+${body}`;
+    try {
+      const answer = await chat([{ role: "user", content: instruction }], {
+        temperature: 0.2,
+      });
+      plans.push(...parsePlans(answer));
+    } catch (e) {
+      Zotero.debug(`[Prism] annotate batch failed: ${e}`);
+    }
+  }
+
+  window.changeLine({
+    text: `${bi("Placing", "正在写入")} ${plans.length} ${bi("annotations", "条标注")}`,
+    progress: 90,
+  });
+
+  // Highlight rectangles come from the rendered text layer, so the PDF has to
+  // be open. Opening it is far better than silently degrading every highlight
+  // into a page-anchored sticky note.
+  let reader: any = Zotero.Reader._readers?.find(
+    (r: any) => r.itemID === attachment.id,
+  );
+  if (!reader) {
+    try {
+      reader = await Zotero.Reader.open(attachment.id);
+    } catch (e) {
+      Zotero.debug(`[Prism] could not open the PDF for annotating: ${e}`);
+    }
+  }
+  const rectsByPage = reader ? await pageTextBoxes(reader) : null;
+
+  let created = 0;
+  for (const plan of plans) {
+    const pageIndex = plan.page - 1;
+    if (pageIndex < 0 || pageIndex >= pages.length) continue;
+    const position = rectsByPage
+      ? locate(rectsByPage[pageIndex] || [], plan.quote, pageIndex)
+      : null;
+    try {
+      await createAnnotation(attachment, {
+        pageIndex,
+        quote: plan.quote,
+        comment: plan.comment,
+        color: options.color || "#ffd400",
+        rects: position?.rects,
+        offset: position?.offset ?? 0,
+      });
+      created++;
+    } catch (e) {
+      Zotero.debug(`[Prism] annotation write failed: ${e}`);
+    }
+  }
+  window.changeLine({
+    text: `${bi("Created", "已创建")} ${created} ${bi("annotations", "条标注")}`,
+    progress: 100,
+    type: "success",
+  });
+  window.startCloseTimer(4000);
+}
+
+function parsePlans(answer: string): AnnotationPlan[] {
+  const match = answer.match(/\[[\s\S]*\]/);
+  if (!match) return [];
+  try {
+    const parsed = JSON.parse(match[0]);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((p: any) => p && typeof p.quote === "string" && p.quote.length > 8)
+      .map((p: any) => ({
+        page: Number(p.page) || 1,
+        quote: String(p.quote).trim(),
+        comment: String(p.comment || "").trim(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+interface TextBox {
+  text: string;
+  rect: [number, number, number, number];
+}
+
+/** Text items with their PDF-space rectangles, page by page. */
+async function pageTextBoxes(reader: any): Promise<TextBox[][]> {
+  const out: TextBox[][] = [];
+  try {
+    const app = await pdfReady(reader);
+    if (!app) return out;
+    const total = pageCount(reader) || pageViews(reader).length;
+    for (let index = 0; index < total; index++) {
+      const page = await pageText(reader, app, index);
+      if (!page) {
+        out.push([]);
+        continue;
+      }
+      const boxes: TextBox[] = [];
+      for (const chunk of page.items) {
+        if (!chunk.str?.trim()) continue;
+        const x = chunk.transform[4];
+        const y = chunk.transform[5];
+        boxes.push({
+          text: chunk.str,
+          rect: [x, y, x + (chunk.width || 0), y + (chunk.height || 10)],
+        });
+      }
+      out.push(boxes);
+    }
+  } catch (e) {
+    Zotero.debug(`[Prism] text box extraction failed: ${e}`);
+  }
+  return out;
+}
+
+function normalise(text: string) {
+  return text.toLowerCase().replace(/\s+/g, " ").replace(/[^\w\s]/g, "");
+}
+
+/** Find the run of text boxes covering `quote` and merge them into line rects. */
+function locate(
+  boxes: TextBox[],
+  quote: string,
+  pageIndex: number,
+): { rects: number[][]; offset: number } | null {
+  if (!boxes.length) return null;
+  const target = normalise(quote);
+  if (target.length < 8) return null;
+  const joined = boxes.map((b) => normalise(b.text));
+  let cursor = "";
+  const starts: number[] = [];
+  for (const piece of joined) {
+    starts.push(cursor.length);
+    cursor += `${piece} `;
+  }
+  const at = cursor.indexOf(target);
+  if (at < 0) return null;
+  const end = at + target.length;
+
+  const picked: TextBox[] = [];
+  for (let i = 0; i < boxes.length; i++) {
+    const start = starts[i];
+    const stop = start + joined[i].length;
+    if (stop >= at && start <= end) picked.push(boxes[i]);
+  }
+  if (!picked.length) return null;
+
+  // group into lines by y, then take the bounding box of each line
+  const lines = new Map<number, number[]>();
+  for (const box of picked) {
+    const key = Math.round(box.rect[1] / 4) * 4;
+    const existing = lines.get(key);
+    if (!existing) lines.set(key, [...box.rect]);
+    else {
+      existing[0] = Math.min(existing[0], box.rect[0]);
+      existing[1] = Math.min(existing[1], box.rect[1]);
+      existing[2] = Math.max(existing[2], box.rect[2]);
+      existing[3] = Math.max(existing[3], box.rect[3]);
+    }
+  }
+  void pageIndex;
+  return {
+    rects: [...lines.values()].map((r) => r.map((n) => Math.round(n * 100) / 100)),
+    offset: at,
+  };
+}
+
+export async function createAnnotation(
+  attachment: Zotero.Item,
+  options: {
+    pageIndex: number;
+    quote?: string;
+    comment?: string;
+    color?: string;
+    rects?: number[][];
+    offset?: number;
+    tags?: string[];
+  },
+): Promise<Zotero.Item> {
+  const annotation = new Zotero.Item("annotation");
+  annotation.libraryID = attachment.libraryID;
+  annotation.parentID = attachment.id;
+  const hasRects = !!options.rects?.length;
+  annotation.annotationType = hasRects ? "highlight" : "note";
+  if (hasRects && options.quote) annotation.annotationText = options.quote;
+  annotation.annotationComment = options.comment || "";
+  annotation.annotationColor = options.color || "#ffd400";
+  const rects = hasRects
+    ? options.rects!
+    : [[40, 700, 240, 720]];
+  annotation.annotationPosition = JSON.stringify({
+    pageIndex: options.pageIndex,
+    rects,
+  });
+  const top = Math.round(2000 - (rects[0]?.[3] ?? 0));
+  annotation.annotationSortIndex = [
+    String(options.pageIndex).padStart(5, "0"),
+    String(options.offset ?? 0).padStart(6, "0"),
+    String(Math.max(0, top)).padStart(5, "0"),
+  ].join("|");
+  for (const tag of options.tags || ["prism"]) annotation.addTag(tag, 1);
+  await annotation.saveTx();
+  return annotation;
+}
+
+/** Store a chat answer as an annotation comment on the page being read. */
+export async function writeAnswerAsAnnotation(text: string) {
+  const attachment = readerAttachment();
+  if (!attachment) return;
+  const reader = currentReader();
+  await createAnnotation(attachment, {
+    pageIndex: readerPageIndex(reader),
+    comment: text.slice(0, 4000),
+    color: "#a28ae5",
+    tags: ["prism/answer"],
+  });
+  new ztoolkit.ProgressWindow(config.addonName)
+    .createLine({ text: bi("Written to annotation", "已写入标注"), type: "success" })
+    .show(2000);
+}
+
+/* -------------------------------------------------------------- note filling */
+
+/**
+ * Fill a note template with the paper's content.
+ * The template is any note HTML — typically one produced by Better Notes.
+ */
+export async function aiFillNote(
+  item: Zotero.Item,
+  templateHTML: string,
+  extraInstruction = "",
+) {
+  const target = toRegularItem(item);
+  if (!target) return;
+  const window = progress(bi("Filling the note…", "正在填写笔记…"));
+  const text = await getFullText(target, { maxChars: 180_000 });
+  const instruction = `Fill in the note template below using the paper. Keep the template's structure and headings exactly; replace only the placeholder content. Return valid HTML with no markdown fences and no commentary.
+
+${extraInstruction}
+
+--- TEMPLATE ---
+${templateHTML}
+
+--- PAPER METADATA ---
+${metaBlock(target)}
+
+--- PAPER ---
+${clampTokens(text, 90_000)}`;
+  try {
+    const answer = await chat([{ role: "user", content: instruction }], {
+      temperature: 0.3,
+    });
+    const html = answer.replace(/^```(?:html)?|```$/gm, "").trim();
+    const note = await createChildNote(target, `${html}\n${provenanceFooter()}`, "prism/note");
+    window.changeLine({ text: bi("Note created", "笔记已创建"), progress: 100, type: "success" });
+    void revealNotes([note]);
+  } catch (e) {
+    window.changeLine({ text: `${bi("Failed: ", "失败：")}${e}`, type: "fail" });
+  }
+  window.startCloseTimer(3000);
+}
+
+/** Note templates already stored in the library, for the fill-note picker. */
+export async function listNoteTemplates(): Promise<
+  Array<{ name: string; html: string }>
+> {
+  const templates: Array<{ name: string; html: string }> = [];
+  try {
+    const better = (Zotero as any).BetterNotes?.api?.template;
+    if (better?.getTemplateKeys) {
+      for (const key of better.getTemplateKeys()) {
+        templates.push({
+          name: key.name,
+          html: better.getTemplateText(key.name) || "",
+        });
+      }
+    }
+  } catch {
+    /* Better Notes not installed */
+  }
+  if (!templates.length) {
+    templates.push({
+      name: bi("Prism default", "棱镜默认模板"),
+      html: DEFAULT_NOTE_TEMPLATE,
+    });
+  }
+  return templates;
+}
+
+const DEFAULT_NOTE_TEMPLATE = `<h1>{{title}}</h1>
+<h2>Problem</h2><p></p>
+<h2>Method</h2><p></p>
+<h2>Data &amp; setup</h2><p></p>
+<h2>Findings</h2><ul><li></li></ul>
+<h2>Limitations</h2><ul><li></li></ul>
+<h2>How it connects to my work</h2><p></p>
+<h2>Quotes worth keeping</h2><blockquote><p></p></blockquote>`;
+
+/* ----------------------------------------------------------- bird's-eye view */
+
+/**
+ * A markdown digest of one or more papers, written to disk so it can be opened
+ * in Obsidian, Logseq or any editor. Every heading links back into Zotero.
+ */
+export async function birdsEyeView(items: Zotero.Item[]): Promise<string> {
+  const window = progress(bi("Building bird's-eye view…", "正在生成文献鸟瞰…"));
+  const sections: string[] = [
+    `# ${bi("Bird's-eye view", "文献鸟瞰")} — ${new Date().toLocaleDateString()}`,
+    "",
+  ];
+  let done = 0;
+  for (const item of items) {
+    const target = toRegularItem(item);
+    if (!target) continue;
+    window.changeLine({
+      text: `${++done}/${items.length}`,
+      progress: (done / items.length) * 100,
+    });
+    const attachment = await bestAttachment(target);
+    const text = await getFullText(target, { maxChars: 120_000, pageMarkers: true });
+    const annotations = await itemAnnotations(target);
+    const instruction = `Write a compact markdown digest of this paper with these sections: **In one line**, **Setup**, **What they found**, **How to use it**, **Open questions**. Keep every bullet short and factual, and mark each with the page as (p. N).
+
+--- METADATA ---
+${metaBlock(target)}
+
+--- PAPER ---
+${clampTokens(text, 60_000)}`;
+    let digest = "";
+    try {
+      digest = await chat([
+        { role: "user", content: `${instruction}${replyLanguage(instruction, {})}\n\n${FORMULAS}` },
+      ]);
+    } catch (e) {
+      digest = `_${bi("Generation failed: ", "生成失败：")}${e}_`;
+    }
+    sections.push(
+      `## ${String(target.getField("title") || "")}`,
+      "",
+      `*${itemCitation(target)}* · [${bi("open in Zotero", "在 Zotero 中打开")}](zotero://select/library/items/${target.key})`,
+      "",
+      attachment
+        ? digest.replace(
+            /[(（]p\.?\s*(\d{1,4})[)）]/gi,
+            (_m, page) =>
+              `([p. ${page}](zotero://open-pdf/library/items/${attachment.key}?page=${page}))`,
+          )
+        : digest,
+      "",
+    );
+    if (annotations.length) {
+      sections.push(`### ${bi("My highlights", "我的标注")}`, "");
+      for (const annotation of annotations.slice(0, 40)) {
+        const link = attachment
+          ? `[p. ${annotation.pageLabel}](zotero://open-pdf/library/items/${attachment.key}?page=${annotation.page + 1}&annotation=${annotation.key})`
+          : `p. ${annotation.pageLabel}`;
+        sections.push(
+          `- ${link} ${annotation.text ? `"${annotation.text}"` : ""} ${
+            annotation.comment ? `— ${annotation.comment}` : ""
+          }`,
+        );
+      }
+      sections.push("");
+    }
+  }
+
+  const markdown = sections.join("\n");
+  const path = await writeMarkdown(markdown);
+  window.changeLine({
+    text: path ? `${bi("Saved to", "已保存至")} ${path}` : bi("Done", "完成"),
+    progress: 100,
+    type: "success",
+  });
+  window.startCloseTimer(6000);
+  if (path) {
+    try {
+      Zotero.launchFile(path);
+    } catch (e) {
+      Zotero.debug(`[Prism] could not open ${path}: ${e}`);
+    }
+  }
+  return markdown;
+}
+
+async function writeMarkdown(markdown: string): Promise<string> {
+  try {
+    const dir = PathUtils.join(Zotero.DataDirectory.dir, "prism", "birdseye");
+    await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
+    const name = `birdseye-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.md`;
+    const path = PathUtils.join(dir, name);
+    await IOUtils.writeUTF8(path, markdown);
+    return path;
+  } catch (e) {
+    Zotero.debug(`[Prism] markdown write failed: ${e}`);
+    return "";
+  }
+}
+
+/** Suggest tags for items and apply the ones the user keeps. */
+export async function suggestTags(items: Zotero.Item[]): Promise<
+  Array<{ item: Zotero.Item; tags: string[] }>
+> {
+  const out: Array<{ item: Zotero.Item; tags: string[] }> = [];
+  for (const item of items) {
+    const target = toRegularItem(item);
+    if (!target) continue;
+    try {
+      const prompt = await interpolate(builtin("tag-suggest").body, { item: target });
+      const answer = await chat([{ role: "user", content: prompt }], {
+        temperature: 0.2,
+      });
+      const tags = answer
+        .split(/[,\n、]/)
+        .map((t) => t.replace(/^[-*\d.\s]+/, "").trim())
+        .filter((t) => t.length > 1 && t.length < 40)
+        .slice(0, 10);
+      out.push({ item: target, tags });
+    } catch (e) {
+      Zotero.debug(`[Prism] tag suggestion failed: ${e}`);
+    }
+  }
+  return out;
+}
+
+export { noteHTMLToMarkdown };
