@@ -1,7 +1,7 @@
 {
   "name": "zotero-prism",
   "type": "module",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Reading analytics, an AI copilot and full-text translation for Zotero. Free and open source — github.com/mxlapan/zotero-prism · 免费开源，发布和使用均不收取任何费用。",
   "config": {
     "addonName": "Zotero Prism",
