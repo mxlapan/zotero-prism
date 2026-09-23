@@ -15,6 +15,8 @@ import { citedFor, citedSummary } from "./citations";
 import { rankTagsFor } from "./ranks";
 
 const NS = "http://www.w3.org/1999/xhtml";
+/** Star size in the rating column, chosen so five of them fit its fixed width. */
+const STAR_PX = 13;
 
 function color(value: number, max: number, base: string): string {
   if (!max || !value) return "transparent";
@@ -103,9 +105,20 @@ export function registerColumns() {
       renderCell: (_index: number, data: string, column: any, _first: boolean, doc: Document) => {
         const node = cell(doc, `cell ${column.className}`, "prismRating");
         const value = Number(data) || 0;
-        node.textContent = value ? "★".repeat(value) + "☆".repeat(5 - value) : "☆☆☆☆☆";
-        node.style.color = value ? "#e5b95f" : "var(--fill-quinary, #bbb)";
-        node.style.letterSpacing = "-1px";
+        // The column is fixed at 70px, so the stars cannot follow Zotero's font
+        // size: at "larger" the fifth one was cut off and the rating read
+        // "★★★…". They are marks, not text, and keep their own size.
+        const stars = doc.createElement("span");
+        stars.dataset.prismStars = "1";
+        stars.textContent = value ? "★".repeat(value) + "☆".repeat(5 - value) : "☆☆☆☆☆";
+        stars.style.fontSize = `${STAR_PX}px`;
+        stars.style.letterSpacing = "0";
+        stars.style.color = value ? "#e5b95f" : "var(--fill-quinary, #bbb)";
+        // The tree's 8px side padding leaves exactly the width five stars take,
+        // and the last of them was being traded for an ellipsis.
+        node.style.paddingInline = "4px";
+        node.style.textOverflow = "clip";
+        node.append(stars);
         node.dataset.prismRating = "1";
         return node;
       },
@@ -295,7 +308,7 @@ export function startTreeDecorator(win: Window, attempt = 0) {
   const observer = new win.MutationObserver(schedule);
   observer.observe(tree, { childList: true, subtree: true, attributes: true });
   tree.addEventListener("scroll", schedule, true);
-  tree.addEventListener("click", (event: MouseEvent) => onTreeClick(event, win), true);
+  tree.addEventListener("mousedown", (event: MouseEvent) => onRatingPress(event, win), true);
   schedule();
   (win as any)._prismTreeObserver = observer;
 }
@@ -499,8 +512,15 @@ function rankColor(tag: string): string {
   return "#2ea8e5";
 }
 
-/** Clicking the rating column sets the rating at the clicked star. */
-async function onTreeClick(event: MouseEvent, win: Window) {
+/**
+ * Clicking the rating column sets the rating at the clicked star.
+ *
+ * On press, not on click: selecting a row redraws its cells, so on a row that
+ * was not already selected the click landed on a node that no longer existed
+ * and the first click only ever selected the row. The row still selects — this
+ * handler lets the event through.
+ */
+async function onRatingPress(event: MouseEvent, win: Window) {
   const target = event.target as HTMLElement;
   const cellNode = target?.closest?.("[data-prism-rating]") as HTMLElement | null;
   if (!cellNode) return;
@@ -511,10 +531,11 @@ async function onTreeClick(event: MouseEvent, win: Window) {
     index,
   )?.ref;
   if (!item?.isRegularItem?.()) return;
-  const rect = cellNode.getBoundingClientRect();
+  // Measure the stars themselves: they no longer fill the cell, and taking the
+  // ratio across the whole cell put the click a star out near the edges.
+  const marks = cellNode.querySelector("[data-prism-stars]") as HTMLElement | null;
+  const rect = (marks || cellNode).getBoundingClientRect();
   const ratio = (event.clientX - rect.left) / Math.max(1, rect.width);
   const value = Math.max(0, Math.min(5, Math.ceil(ratio * 5)));
-  event.preventDefault();
-  event.stopPropagation();
   await setRating(item, getRating(item) === value ? 0 : value);
 }

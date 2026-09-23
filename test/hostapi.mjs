@@ -498,6 +498,29 @@ ok(
   guardAt > -1 && selectAt > -1 && guardAt < selectAt,
   `travelled at ${guardAt}, onSelect at ${selectAt}`,
 );
+
+/* ---------------------------------------------------- stars in a fixed column ---
+   The rating column has a fixed width, so stars drawn in the tree's own font
+   size overflowed it at Zotero's larger settings and the rating showed as
+   "★★★…". They carry their own size, and the click maps across the stars
+   rather than the cell. */
+const columnsSource = sources.find(([path]) => rel(path) === "src/modules/spectrum/columns.ts")[1];
+ok(
+  "the rating stars are sized independently of the tree font",
+  /fontSize = `\$\{STAR_PX\}px`/.test(columnsSource),
+  "renderCell no longer pins the star size",
+);
+ok(
+  "a click on the rating is measured across the stars",
+  columnsSource.includes('querySelector("[data-prism-stars]")'),
+  "onTreeClick still measures the whole cell",
+);
+ok(
+  "the rating reacts to the press, not the click",
+  /addEventListener\("mousedown",[\s\S]{0,60}onRatingPress/.test(columnsSource),
+  "selecting a row redraws its cells, so the click arrives at a node that is gone",
+);
+
 console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
 process.exit(fails.length ? 1 : 0);
 
