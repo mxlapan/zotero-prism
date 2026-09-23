@@ -468,5 +468,21 @@ ok(
   JSON.stringify(wrongKeys),
 );
 
+
+/* ------------------------------------------------ progress popups and focus ---
+   Zotero hands the focus back to the main window when a progress popup closes.
+   A note window opened while one was still counting down was therefore shoved
+   behind the main window a second or two later: the note had opened, and the
+   user saw nothing. revealNotes dismisses the popups before it opens one. */
+const revealSource = sources.find(([path]) => rel(path) === "src/utils/item.ts")[1];
+const revealBody = revealSource.slice(revealSource.indexOf("export async function revealNotes"));
+const closesAt = revealBody.indexOf("ProgressWindowSet");
+const opensAt = revealBody.indexOf("openNote");
+ok(
+  "revealNotes dismisses the progress popups before it opens a note",
+  closesAt > -1 && opensAt > -1 && closesAt < opensAt,
+  `closeAll at ${closesAt}, openNote at ${opensAt}`,
+);
 console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
 process.exit(fails.length ? 1 : 0);
+

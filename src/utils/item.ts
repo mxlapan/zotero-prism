@@ -390,10 +390,21 @@ export async function createChildNote(
  * and the new note sat unseen under its parent, so people kept waiting for a
  * result that was already there. One note opens in its own window; several are
  * selected in the library instead of opening a window each.
+ *
+ * The progress popups are dismissed first. Zotero hands the focus back to the
+ * main window when one of them closes, so a note window opened while a popup
+ * was still counting down was pushed behind the main window a moment later and
+ * stayed there — the note opened, and the user saw nothing.
  */
 export async function revealNotes(notes: Zotero.Item[]) {
   const pane = zoteroPane();
   if (!pane || !notes.length) return;
+  try {
+    (Zotero as any).ProgressWindowSet?.closeAll();
+    await Zotero.Promise.delay(300);
+  } catch (e) {
+    Zotero.debug(`[Prism] could not close the progress popups: ${e}`);
+  }
   try {
     if (notes.length > 1) {
       await pane.selectItems(notes.map((note) => note.id));
