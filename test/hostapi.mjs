@@ -483,6 +483,21 @@ ok(
   closesAt > -1 && opensAt > -1 && closesAt < opensAt,
   `closeAll at ${closesAt}, openNote at ${opensAt}`,
 );
+
+/* ------------------------------------------------------ a drag is not a click ---
+   The browser follows the mouseup that ends a drag with a click on whatever is
+   under the pointer. In the graph that click selected the node just dragged and
+   jumped to the library, so the tab could not be rearranged at all. The handler
+   has to know whether the pointer travelled. */
+const graph = sources.find(([path]) => rel(path) === "src/lib/forcegraph.ts")[1];
+const clickHandler = graph.slice(graph.indexOf('addEventListener("click"'));
+const guardAt = clickHandler.indexOf("travelled");
+const selectAt = clickHandler.indexOf("onSelect");
+ok(
+  "the graph ignores the click that ends a drag",
+  guardAt > -1 && selectAt > -1 && guardAt < selectAt,
+  `travelled at ${guardAt}, onSelect at ${selectAt}`,
+);
 console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
 process.exit(fails.length ? 1 : 0);
 

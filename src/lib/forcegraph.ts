@@ -6,6 +6,9 @@
  * the tab loses focus.
  */
 
+/** How far the pointer may travel while pressed and still count as a click, in px. */
+const DRAG_SLOP = 4;
+
 export interface GraphNode {
   id: string;
   label: string;
@@ -92,6 +95,9 @@ export class ForceGraph {
   private dragging: GraphNode | null = null;
   private panning = false;
   private lastPointer = { x: 0, y: 0 };
+  /** Where the press started, and whether it travelled far enough to be a drag. */
+  private pressedAt: { x: number; y: number } | null = null;
+  private travelled = false;
   private highlight = new Set<string>();
   private options: Required<Pick<GraphOptions, "charge" | "linkDistance" | "linkStrength" | "gravity" | "damping">> &
     GraphOptions;
@@ -400,8 +406,15 @@ export class ForceGraph {
         this.panning = true;
       }
       this.lastPointer = { x: event.clientX, y: event.clientY };
+      this.pressedAt = { x: event.clientX, y: event.clientY };
+      this.travelled = false;
     });
     canvas.addEventListener("mousemove", (event: MouseEvent) => {
+      if (this.pressedAt && !this.travelled) {
+        const dx = event.clientX - this.pressedAt.x;
+        const dy = event.clientY - this.pressedAt.y;
+        if (dx * dx + dy * dy > DRAG_SLOP * DRAG_SLOP) this.travelled = true;
+      }
       if (this.dragging) {
         const { x, y } = this.toWorld(event.clientX, event.clientY);
         this.dragging.x = x;
@@ -432,6 +445,14 @@ export class ForceGraph {
       this.options.onHover?.(null, 0, 0);
     });
     canvas.addEventListener("click", (event: MouseEvent) => {
+      // A drag ends with the pointer still on the node it moved, so the browser
+      // follows mouseup with a click. Selecting on that click jumped to the item
+      // in the library — every attempt to rearrange the graph threw the reader
+      // out of it. Only a press that stayed put counts as a click.
+      const dragged = this.travelled;
+      this.pressedAt = null;
+      this.travelled = false;
+      if (dragged) return;
       const node = this.nodeAt(event.clientX, event.clientY);
       if (node) this.options.onSelect?.(node);
     });
