@@ -58,7 +58,10 @@ export function bridgeStatus(): { connected: boolean; target: string; age: numbe
   };
 }
 
-function json(status: number, payload: unknown) {
+/** Zotero's server answers with `sendResponse(code, contentType, body)`. */
+type BridgeReply = [number, string, string];
+
+function json(status: number, payload: unknown): BridgeReply {
   return [status, "application/json", JSON.stringify(payload)];
 }
 
@@ -77,14 +80,18 @@ function deliverNext() {
 
 function endpoint(
   methods: string[],
-  handler: (data: any, respond: (response: any) => void) => void,
+  handler: (data: any, respond: (response: BridgeReply) => void) => void,
 ) {
   const Endpoint = function () {} as any;
   Endpoint.prototype = {
     supportedMethods: methods,
     supportedDataTypes: ["application/json", "text/plain"],
     permitBookmarklet: false,
-    init(options: any, sendResponse: (response: any) => void) {
+    // Two parameters, so Zotero passes its own callback, which it calls with
+    // (code, contentType, body). Handing it the tuple as one argument instead
+    // writes the whole array into the status line — "HTTP/1.0 200,application/
+    // json,{} undefined" — which no client can parse.
+    init(options: any, sendResponse: (code: number, contentType: string, body: string) => void) {
       let data = options?.data ?? options;
       if (typeof data === "string") {
         try {
@@ -93,10 +100,11 @@ function endpoint(
           data = {};
         }
       }
+      const reply = (response: BridgeReply) => sendResponse(...response);
       try {
-        handler(data || {}, sendResponse);
+        handler(data || {}, reply);
       } catch (e) {
-        sendResponse(json(500, { error: String(e) }));
+        reply(json(500, { error: String(e) }));
       }
     },
   };

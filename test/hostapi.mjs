@@ -521,6 +521,49 @@ ok(
   "selecting a row redraws its cells, so the click arrives at a node that is gone",
 );
 
+/* ------------------------------------------------- the browser chat bridge ---
+   Zotero decides how to call an endpoint by the number of parameters its
+   `init` declares: two, and it passes its own callback, which takes
+   (code, contentType, body). The bridge handed that callback the response as
+   a single array, so the server wrote the whole array into the status line —
+   "HTTP/1.0 200,application/json,{} undefined" — and every request from the
+   browser add-on failed to parse. */
+const bridge = sources.find(([path]) => rel(path) === "src/modules/lens/bridge.ts")[1];
+ok(
+  "the bridge replies through Zotero's (code, contentType, body) callback",
+  bridge.includes("sendResponse(...response)"),
+  "an array passed as the first argument becomes the status line",
+);
+
+/* The same server drops any request that looks like a browser's — a Mozilla
+   user agent or an Origin header — unless it carries the connector API
+   header, which is why Connect reported "Failed to fetch" and nothing else.
+   Both request helpers have to send it. */
+const extension = readFileSync(
+  join(root, "addon/content/browser-extension/background.js"),
+  "utf8",
+);
+ok(
+  "the add-on marks its requests as coming from the connector API",
+  (extension.match(/\.\.\.ZOTERO_HEADERS/g) || []).length === 2,
+  "each fetch needs the header, not only the handshake",
+);
+ok(
+  "the add-on reads the handshake reply instead of assuming it worked",
+  /reply\?\.ok/.test(extension),
+  "post() swallows a failed parse, so ok has to come from the body",
+);
+/* Connect read `tab.url` straight into `new URL`, on a tab whose address
+   Chrome may refuse to hand over — chrome://extensions, the new-tab page —
+   where it is undefined. The throw landed outside connect()'s try, so the
+   popup was never answered and the browser showed an uncaught rejection. */
+ok(
+  "the add-on survives a tab whose address it cannot read",
+  (extension.match(/new URL\(/g) || []).length === 1 &&
+    /function targetOf\(tab\)[\s\S]{0,200}?catch/.test(extension),
+  "every URL is built from tab.url, so every one of them can throw",
+);
+
 console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
 process.exit(fails.length ? 1 : 0);
 
