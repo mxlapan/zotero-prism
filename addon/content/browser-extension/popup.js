@@ -8,9 +8,11 @@ let lastError = "";
 async function refresh() {
   const info = await chrome.runtime.sendMessage({ type: "prism-status" });
   endpoint.value = info.endpoint || "";
-  if (info.connected) {
+  if (info.wanted) {
     lastError = "";
-    status.textContent = `Connected — ${info.target}${info.busy ? " · answering" : ""}`;
+    status.textContent = info.connected
+      ? `Connected — ${info.target}${info.busy ? " · answering" : ""}`
+      : `Zotero is not answering — retrying (${info.target})`;
     toggle.textContent = "Disconnect";
     toggle.classList.add("secondary");
   } else if (lastError) {
@@ -28,7 +30,7 @@ async function refresh() {
 
 toggle.addEventListener("click", async () => {
   const info = await chrome.runtime.sendMessage({ type: "prism-status" });
-  if (info.connected) {
+  if (info.wanted) {
     await chrome.runtime.sendMessage({ type: "prism-disconnect" });
     lastError = "";
   } else {

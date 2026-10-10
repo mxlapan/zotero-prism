@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Zotero Prism Bridge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Answer Zotero Prism's questions with a web chat you already have open.",
-  "permissions": ["storage", "scripting", "activeTab"],
+  "permissions": ["storage", "scripting", "activeTab", "alarms"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
@@ -16,7 +16,8 @@
     "https://www.kimi.com/*",
     "https://chat.deepseek.com/*",
     "https://chat.qwen.ai/*",
-    "https://tongyi.aliyun.com/*",
+    "https://www.qianwen.com/*",
+    "https://chat.z.ai/*",
     "https://yuanbao.tencent.com/*",
     "https://chatglm.cn/*"
   ],

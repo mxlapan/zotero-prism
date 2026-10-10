@@ -41,9 +41,10 @@ function state() {
 }
 
 export function bridgeAvailable(): boolean {
-  return (
-    state().connected && Date.now() - state().lastSeen < HANDSHAKE_TTL
-  );
+  if (!state().connected) return false;
+  // While the page is writing an answer the add-on is not polling, and a model
+  // that thinks before it speaks can stay silent for longer than the TTL.
+  return active.size > 0 || Date.now() - state().lastSeen < HANDSHAKE_TTL;
 }
 
 export function bridgeTarget(): string {
@@ -126,8 +127,10 @@ export function registerBridge() {
     const bridge = state();
     bridge.connected = true;
     bridge.lastSeen = Date.now();
-    bridge.target = data.target || bridge.target || "web";
-    setPref("lens.bridgeTarget", bridge.target);
+    const target = data.target || bridge.target || "web";
+    // The add-on says hello every few seconds while a job runs.
+    if (target !== bridge.target) setPref("lens.bridgeTarget", target);
+    bridge.target = target;
     respond(json(200, { ok: true, version: addon.data.config.addonName }));
   });
 

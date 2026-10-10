@@ -154,7 +154,7 @@ npm start
 - **语义检索**：在本地建立索引，结合向量检索与 BM25；未配置 Embedding 或尚未建立索引时，改用关键词检索
 - **回答存档**：一键保存为子笔记，同时记录所用模型、提示词与来源；也可追加到当前笔记
 - **模型接入**：支持 OpenAI / DeepSeek / 硅基流动 / Kimi / 智谱 / Ollama / LM Studio / 中转服务及 Anthropic，可保存多套配置
-- **网页联动**：安装插件自带的浏览器扩展后，在已登录的 ChatGPT / Claude / Gemini / 豆包 / Kimi / DeepSeek / 通义 / 元宝 / 智谱网页中点击「Connect」，即可通过网页版问答
+- **网页联动**：安装插件自带的浏览器扩展后，在已登录的 ChatGPT / Claude / Gemini / 豆包 / Kimi / DeepSeek / 千问 / 元宝 / 智谱网页中点击「Connect」，即可通过网页版问答
 
 <details>
 <summary>自定义提示词</summary>
