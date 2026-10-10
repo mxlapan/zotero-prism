@@ -1,4 +1,10 @@
-import { parseMap, applyMap } from "../src/modules/spectrum/columns";
+import {
+  parseMap,
+  applyMap,
+  pickHashTags,
+  tagsOutside,
+  autoTagColor,
+} from "../src/modules/spectrum/columns";
 import { matchesQuery } from "../src/modules/spectrum/annotations";
 
 const fails: string[] = [];
@@ -26,6 +32,20 @@ ok("OR one present", matchesQuery("transformer attention", "lstm || attention"))
 ok("OR none present", !matchesQuery("transformer attention", "lstm || gru"));
 ok("empty query matches", matchesQuery("anything", "   "));
 ok("case insensitive", matchesQuery("Transformer", "transformer"));
+
+// #Tags column: what it picks, and what that leaves for the Tags column
+const mine = ["#Method/Survey", "#todo", "deep learning", "CCF-A"];
+const hash = pickHashTags(mine, "#");
+ok("prefix rule drops the symbol", hash.map((t) => t.label).join("|") === "Method/Survey|todo", hash.map((t) => t.label).join("|"));
+ok("prefix rule keeps the stored tag", hash[0].tag === "#Method/Survey");
+ok("map renames the label only", pickHashTags(mine, "#", parseMap("todo=待读,"))[1].label === "待读");
+ok("regex rule with g flag still tests every tag", pickHashTags(["#a", "#b", "#c"], "/^#(.+)/g").length === 3);
+ok("exclusive: picked tags leave the Tags column", tagsOutside(mine, "#", true).join("|") === "deep learning|CCF-A", tagsOutside(mine, "#", true).join("|"));
+ok("not exclusive: Tags column keeps everything", tagsOutside(mine, "#", false).length === 4);
+ok("empty rule never blanks the Tags column", tagsOutside(mine, "", true).length === 4);
+ok("exclusive follows a regex rule", tagsOutside(mine, "/^CCF-(.+)/", true).join("|") === "#Method/Survey|#todo|deep learning");
+ok("auto colour is stable", autoTagColor("todo") === autoTagColor("todo") && /^#[0-9a-f]{6}$/.test(autoTagColor("todo")));
+ok("nested tags share their parent's colour", autoTagColor("Method/Survey") === autoTagColor("Method/Online"));
 
 console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
 process.exit(fails.length ? 1 : 0);

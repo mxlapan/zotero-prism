@@ -14,6 +14,8 @@ pref("spectrum.tagsColumn", true);
 pref("spectrum.hashTagColumn", true);
 pref("spectrum.hashTagPrefix", "#");
 pref("spectrum.hashTagMap", "");
+pref("spectrum.hashTagExclusive", true);
+pref("spectrum.hashTagColor", true);
 pref("spectrum.rankColumn", true);
 pref("spectrum.rankFields", "sciUp,sciif,ccf,pku,cssci");
 pref("spectrum.rankMap", "SCIWARN=🚫, /SCIIF/=IF, ");

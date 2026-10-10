@@ -19,6 +19,8 @@ declare namespace _ZoteroTypes {
       "spectrum.hashTagColumn": boolean;
       "spectrum.hashTagPrefix": string;
       "spectrum.hashTagMap": string;
+      "spectrum.hashTagExclusive": boolean;
+      "spectrum.hashTagColor": boolean;
       "spectrum.rankColumn": boolean;
       "spectrum.rankFields": string;
       "spectrum.rankMap": string;

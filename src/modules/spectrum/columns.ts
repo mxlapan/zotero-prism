@@ -130,11 +130,7 @@ export function registerColumns() {
       dataKey: "prismTags",
       label: bi("Tags", "标签"),
       width: "120",
-      dataProvider: (item: Zotero.Item) =>
-        item
-          .getTags?.()
-          .map((t: any) => t.tag)
-          .join(" ") || "",
+      dataProvider: (item: Zotero.Item) => plainTags(item).join(" "),
       renderCell: (_index: number, _data: string, column: any, _first: boolean, doc: Document) =>
         cell(doc, `cell ${column.className} prism-cell-tags`, "prismTags"),
     });
@@ -146,6 +142,8 @@ export function registerColumns() {
       label: bi("#Tags", "#标签"),
       width: "110",
       dataProvider: (item: Zotero.Item) => hashTags(item).join(" / "),
+      renderCell: (_index: number, _data: string, column: any, _first: boolean, doc: Document) =>
+        cell(doc, `cell ${column.className} prism-cell-tags`, "prismHash"),
     });
   }
 
@@ -187,36 +185,88 @@ export function unregisterColumns() {
   }
 }
 
-/** Tags matching the configured prefix or regular expression. */
-export function hashTags(item: Zotero.Item): string[] {
-  const rule = getPref<string>("spectrum.hashTagPrefix", "#").trim();
-  const map = parseMap(getPref<string>("spectrum.hashTagMap", ""));
-  const tags = item.getTags?.().map((t: any) => t.tag) || [];
-  let picked: string[] = [];
+export interface PickedTag {
+  /** The tag as Zotero stores it. */
+  tag: string;
+  /** What the #Tags column shows for it. */
+  label: string;
+}
+
+/** Tags matching the configured prefix or regular expression, with their display text. */
+export function pickHashTags(
+  tags: string[],
+  rule: string,
+  map: ReplaceMap = [],
+): PickedTag[] {
+  let picked: PickedTag[] = [];
 
   if (rule.startsWith("/") && rule.lastIndexOf("/") > 0) {
     const end = rule.lastIndexOf("/");
     try {
-      const pattern = new RegExp(rule.slice(1, end), rule.slice(end + 1) || "");
+      // A g or y flag makes exec() remember where it stopped, and every other
+      // tag would then be tested from the middle.
+      const flags = (rule.slice(end + 1) || "").replace(/[gy]/g, "");
+      const pattern = new RegExp(rule.slice(1, end), flags);
       for (const tag of tags) {
         const match = pattern.exec(tag);
         if (!match) continue;
-        picked.push(match.length > 1 ? match.slice(1).filter(Boolean).join(" ") : match[0]);
+        picked.push({
+          tag,
+          label: match.length > 1 ? match.slice(1).filter(Boolean).join(" ") : match[0],
+        });
       }
     } catch {
       picked = [];
     }
   } else if (rule.startsWith("~")) {
     const prefix = rule.slice(1);
-    picked = tags.filter((tag: string) => !tag.startsWith(prefix));
+    picked = tags.filter((tag) => !tag.startsWith(prefix)).map((tag) => ({ tag, label: tag }));
   } else if (rule) {
     picked = tags
-      .filter((tag: string) => tag.startsWith(rule))
-      .map((tag: string) => tag.slice(rule.length));
+      .filter((tag) => tag.startsWith(rule))
+      .map((tag) => ({ tag, label: tag.slice(rule.length) }));
   } else {
-    picked = tags;
+    picked = tags.map((tag) => ({ tag, label: tag }));
   }
-  return picked.map((tag) => applyMap(tag, map)).filter(Boolean);
+  return picked
+    .map(({ tag, label }) => ({ tag, label: applyMap(label, map) }))
+    .filter((entry) => entry.label);
+}
+
+function tagNames(item: Zotero.Item): string[] {
+  return item.getTags?.().map((t: any) => t.tag) || [];
+}
+
+function pickedTags(item: Zotero.Item): PickedTag[] {
+  return pickHashTags(
+    tagNames(item),
+    getPref<string>("spectrum.hashTagPrefix", "#").trim(),
+    parseMap(getPref<string>("spectrum.hashTagMap", "")),
+  );
+}
+
+export function hashTags(item: Zotero.Item): string[] {
+  return pickedTags(item).map((entry) => entry.label);
+}
+
+/**
+ * What the Tags column shows: every tag, or — with "keep #Tags out of the Tags
+ * column" on — every tag the #Tags column is not already showing.
+ */
+export function tagsOutside(tags: string[], rule: string, exclusive: boolean): string[] {
+  // An empty rule picks everything, and would leave this column blank.
+  if (!exclusive || !rule) return tags;
+  const taken = new Set(pickHashTags(tags, rule).map((entry) => entry.tag));
+  return tags.filter((tag) => !taken.has(tag));
+}
+
+function plainTags(item: Zotero.Item): string[] {
+  return tagsOutside(
+    tagNames(item),
+    getPref<string>("spectrum.hashTagPrefix", "#").trim(),
+    getPref<boolean>("spectrum.hashTagColumn", true) &&
+      getPref<boolean>("spectrum.hashTagExclusive", true),
+  );
 }
 
 export type ReplaceMap = Array<[RegExp | string, string]>;
@@ -326,7 +376,7 @@ function decorateRow(row: HTMLElement, item: Zotero.Item, doc: Document) {
   // The item tree recycles row elements and clears their contents on every
   // render, so the guard has to live on each cell rather than on the row —
   // otherwise the freshly created (empty) cells would be skipped forever.
-  const stamp = `${item.id}:${item.version}:${Date.now() >> 14}`;
+  const stamp = `${item.id}:${item.version}:${Date.now() >> 14}:${tagPrefsStamp()}`;
 
   /* title background = reading heat, bold = unread */
   const primary = row.querySelector(
@@ -371,14 +421,19 @@ function decorateRow(row: HTMLElement, item: Zotero.Item, doc: Document) {
   /* coloured tag pills */
   fillCell(row, "prismTags", stamp, (node) => {
     node.replaceChildren();
-    const tags = item.getTags?.() || [];
-    for (const tag of tags.slice(0, 8)) {
-      const colour = tagColor(item, tag.tag);
-      const pill = doc.createElementNS(NS, "span") as HTMLElement;
-      pill.className = "prism-pill";
-      pill.textContent = colour ? tag.tag.slice(0, 12) : tag.tag.slice(0, 12);
-      pill.style.background = colour || "var(--fill-quinary, #ccc)";
-      pill.style.color = colour ? "#fff" : "var(--fill-primary, #222)";
+    for (const tag of plainTags(item).slice(0, 8)) {
+      node.append(tagPill(doc, tag, tagColor(item, tag)));
+    }
+  });
+
+  /* the picked tags, without their prefix */
+  fillCell(row, "prismHash", stamp, (node) => {
+    node.replaceChildren();
+    const coloured = getPref<boolean>("spectrum.hashTagColor", true);
+    for (const { tag, label } of pickedTags(item).slice(0, 8)) {
+      const colour = coloured ? tagColor(item, tag) || autoTagColor(label) : "";
+      const pill = tagPill(doc, label, colour);
+      pill.title = tag;
       node.append(pill);
     }
   });
@@ -491,6 +546,43 @@ function heatGradient(heat: number[], max: number, base: string): string {
     stops.push(`${c} ${from}%`, `${c} ${to}%`);
   }
   return `linear-gradient(to right, ${stops.join(", ")})`;
+}
+
+function tagPill(doc: Document, text: string, colour: string): HTMLElement {
+  const pill = doc.createElementNS(NS, "span") as HTMLElement;
+  pill.className = "prism-pill";
+  pill.textContent = text.slice(0, 12);
+  pill.style.background = colour || "var(--fill-quinary, #ccc)";
+  pill.style.color = colour ? "#fff" : "var(--fill-primary, #222)";
+  return pill;
+}
+
+/** The tag settings a row was painted with, so changing one repaints it. */
+function tagPrefsStamp(): string {
+  return [
+    getPref<string>("spectrum.hashTagPrefix", "#"),
+    getPref<string>("spectrum.hashTagMap", ""),
+    getPref<boolean>("spectrum.hashTagExclusive", true),
+    getPref<boolean>("spectrum.hashTagColor", true),
+  ].join("\u0001");
+}
+
+/** Dark enough for white text, far enough apart to tell neighbours from each other. */
+const AUTO_TAG_COLORS = [
+  "#c2553f", "#b9741d", "#8a8a1f", "#4f9a3a", "#2a9d8f",
+  "#2b8fc7", "#4f6fd6", "#8a63d2", "#b455b8", "#c24d7c",
+];
+
+/**
+ * A colour for a tag Zotero has none for. Zotero only lets a handful of tags be
+ * given a colour, so the rest take a fixed one from their name: the same tag is
+ * the same colour on every row, and a nested tag follows its top level.
+ */
+export function autoTagColor(label: string): string {
+  const key = label.split("/")[0].trim().toLowerCase();
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return AUTO_TAG_COLORS[hash % AUTO_TAG_COLORS.length];
 }
 
 function tagColor(item: Zotero.Item, tag: string): string {

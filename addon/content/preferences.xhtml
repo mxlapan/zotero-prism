@@ -231,6 +231,8 @@
           <html:input type="text" preference="spectrum.hashTagMap" style="flex:1"
             placeholder="from=to, /re/=to," />
         </hbox>
+        <checkbox preference="spectrum.hashTagExclusive" label="Keep #Tags out of the Tags column (each tag appears in one column only)" data-zh-label="#标签不在「标签」列重复显示（每个标签只出现在一列）" />
+        <checkbox preference="spectrum.hashTagColor" label="Colour the #Tags column (the tag's Zotero colour, otherwise one picked from its name)" data-zh-label="#标签列带颜色（优先使用 Zotero 标签颜色，否则按名称自动配色）" />
         <html:div class="prism-stat-label" data-lang="en">
           The Tags column shows everything an item carries. The #Tags column shows
           one slice of it, so the handful of tags you keep yourself stays readable
@@ -242,9 +244,11 @@
           brackets match; empty shows every tag (which makes this column a copy of
           the one above). #Tag map then renames what is left:
           <html:b>survey=综述, /^ml$/=machine learning,</html:b>
+          With the first box above ticked, a tag the rule picks is shown only in
+          the #Tags column and the Tags column lists the rest.
         </html:div>
         <html:div class="prism-stat-label" data-lang="zh" hidden="true">
-          「标签」列显示条目的全部标签，「#标签」列只显示其中一部分：导入元数据时常附带数以百计的关键词，为自建标签加上统一前缀后，这一列便只显示这些标签。规则写法：<html:b>#</html:b> 保留以 # 开头的标签，显示时去掉 #；<html:b>~draft</html:b> 保留除以 draft 开头之外的全部标签；<html:b>/^CCF-(.+)/</html:b> 保留括号所匹配的部分；留空则显示全部标签（与「标签」列相同）。#标签映射用于重命名保留下来的标签，例如 <html:b>survey=综述, /^ml$/=machine learning,</html:b>
+          「标签」列显示条目的全部标签，「#标签」列只显示其中一部分：导入元数据时常附带数以百计的关键词，为自建标签加上统一前缀后，这一列便只显示这些标签。规则写法：<html:b>#</html:b> 保留以 # 开头的标签，显示时去掉 #；<html:b>~draft</html:b> 保留除以 draft 开头之外的全部标签；<html:b>/^CCF-(.+)/</html:b> 保留括号所匹配的部分；留空则显示全部标签（与「标签」列相同）。#标签映射用于重命名保留下来的标签，例如 <html:b>survey=综述, /^ml$/=machine learning,</html:b> 勾选上方第一项后，符合规则的标签只显示在「#标签」列，「标签」列显示其余标签。
         </html:div>
         <hbox align="center">
           <html:label style="width:120px" data-zh="分区字段">Rank fields</html:label>
