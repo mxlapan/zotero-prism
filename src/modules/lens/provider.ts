@@ -14,6 +14,7 @@ import { getPref, getJSONPref, setJSONPref, setPref } from "../../utils/prefs";
 import {
   AbortLike,
   errorText,
+  HTTPError,
   parseSSE,
   request,
   streamPost,
@@ -193,6 +194,41 @@ export function isConfigured(): boolean {
  * matrix, annotation explain, AI translation) that opaque token was what the
  * user saw. The message is readable now; the `code` is what callers match on.
  */
+function maxTokensText(): string {
+  return bi(
+    "The model reached max_tokens during reasoning and produced no answer. Increase Max tokens in Settings → Prism → AI.",
+    "模型在推理阶段已达到 max_tokens 上限，未生成回答。请在「设置 → Prism → AI」中调大最大 tokens。",
+  );
+}
+
+/**
+ * Why a 200 response held no answer. Some gateways report errors with status
+ * 200, and a base URL that points at a website rather than its API answers
+ * every path with the site's own HTML page.
+ */
+function notAnAnswer(body: string, url: string): Error {
+  const text = (body || "").trim();
+  if (/^</.test(text)) {
+    return new Error(
+      bi(
+        `${url} returned a web page instead of an API response. The base URL may be incorrect, for example a missing /v1, or a website address instead of the API address.`,
+        `${url} 返回了网页而非接口响应。接口地址可能有误，例如漏写了 /v1，或误填为官网地址。`,
+      ),
+    );
+  }
+  const errorBody = parseSSE(text)[0] ?? text;
+  if (/"error"|"code"\s*:\s*[1-9]/.test(errorBody)) {
+    const status = Number(/"(?:status|code)"\s*:\s*(\d{3})/.exec(errorBody)?.[1]) || 400;
+    return new HTTPError(status, errorBody, undefined, url);
+  }
+  return new Error(
+    bi(
+      `The model returned an empty response. Check the model name${getPref<boolean>("lens.stream", true) ? " and whether the endpoint supports streaming" : ""}.`,
+      `模型返回了空回答。请检查模型名称${getPref<boolean>("lens.stream", true) ? "，以及接口是否支持流式输出" : ""}。`,
+    ),
+  );
+}
+
 export function noKeyError(): Error {
   const error = new Error(
     bi(
@@ -214,7 +250,16 @@ export async function chat(
       getPref<boolean>("lens.bridgeEnabled", false) &&
       bridgeAvailable());
   if (useBridge) {
-    return bridgeChat(messages, options);
+    const answer = await bridgeChat(messages, options);
+    if (!answer.trim() && !options.signal?.aborted) {
+      throw new Error(
+        bi(
+          "No answer was received from the connected web chat. Check whether the chat page responded.",
+          "未从网页联动获取到回答。请检查聊天网页是否正常回复。",
+        ),
+      );
+    }
+    return answer;
   }
 
   const profile = currentProfile();
@@ -257,6 +302,13 @@ export async function chat(
       timeout: 900_000,
     });
     let answer = extractWhole(text, profile.provider);
+    // Streaming already refuses an empty answer; this path used to hand "" to
+    // callers that then wrote it into a note.
+    if (!answer.trim() && !options.signal?.aborted) {
+      throw stopReason(text, profile.provider)
+        ? new Error(maxTokensText())
+        : notAnAnswer(text, url);
+    }
     if (answer && stopReason(text, profile.provider)) answer += truncationNote();
     options.onToken?.(answer, answer);
     return answer;
@@ -265,7 +317,7 @@ export async function chat(
   let answer = "";
   let carry = "";
   let truncated = false;
-  await streamPost(url, {
+  const raw = await streamPost(url, {
     headers: headers(),
     body,
     signal: options.signal,
@@ -300,11 +352,8 @@ export async function chat(
     }
   }
   if (!answer.trim()) {
-    throw new Error(
-      truncated
-        ? "The model used up max_tokens before writing an answer (a reasoning model thinks first). Raise Max tokens in Settings → Prism → AI."
-        : "The model returned an empty response. Check the model name and that the endpoint supports streaming.",
-    );
+    if (options.signal?.aborted) return answer;
+    throw truncated ? new Error(maxTokensText()) : notAnAnswer(raw, url);
   }
   if (truncated) {
     answer += truncationNote();

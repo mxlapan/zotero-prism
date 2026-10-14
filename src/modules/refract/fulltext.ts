@@ -288,12 +288,16 @@ export async function translateReader(
       units.push({ text: entry.paragraph.text, parts: [index] });
     });
 
+    let incomplete = 0;
     const byUnit = await translateBatch(
       units.map((unit) => unit.text),
       {
         engine: options.engine,
         to: options.to,
         shouldStop: () => overlay.cancelled,
+        onIncomplete: (missing) => {
+          incomplete = missing;
+        },
         onEngineSwitch: (from, next) =>
           progress.changeLine({ text: `${bi("Engine", "切换引擎：")} ${from} → ${next}` }),
         onProgress: (done, total) =>
@@ -352,11 +356,16 @@ export async function translateReader(
     for (const blocks of overlay.pages.values()) separate(blocks);
     attach(reader, overlay);
     progress.changeLine({
-      text: bi("Translation applied", "翻译完成"),
+      text: incomplete
+        ? bi(
+            `Translation applied. ${incomplete} paragraphs failed and are shown in the original.`,
+            `翻译完成，其中 ${incomplete} 段翻译失败，保留原文。`,
+          )
+        : bi("Translation applied", "翻译完成"),
       progress: 100,
-      type: "success",
+      type: incomplete ? "fail" : "success",
     });
-    progress.startCloseTimer(2500);
+    progress.startCloseTimer(incomplete ? 8000 : 2500);
   } catch (e: any) {
     progress.changeLine({ text: `${bi("Failed: ", "失败：")}${e?.message || e}`, type: "fail" });
     progress.startCloseTimer(6000);
@@ -762,13 +771,30 @@ export async function translateToNote(
     }
   }
 
-  const translated = await translateBatch(
-    flat.map((entry) => entry.paragraph.text),
-    {
-      onProgress: (done, total) =>
-        progress.changeLine({ progress: 30 + (done / total) * 70 }),
-    },
-  );
+  if (!flat.length) {
+    progress.changeLine({ text: bi("This PDF has no text to extract.", "这份 PDF 中没有可提取的文字。"), type: "fail" });
+    progress.startCloseTimer(6000);
+    throw new Error(bi("No extractable text in this PDF.", "这份 PDF 中没有可提取的文字。"));
+  }
+  let incomplete = 0;
+  let translated: string[];
+  try {
+    translated = await translateBatch(
+      flat.map((entry) => entry.paragraph.text),
+      {
+        onIncomplete: (missing) => {
+          incomplete = missing;
+        },
+        onProgress: (done, total) =>
+          progress.changeLine({ progress: 30 + (done / total) * 70 }),
+      },
+    );
+  } catch (e: any) {
+    // Nothing to put in the note: say so instead of filing the original twice.
+    progress.changeLine({ text: `${bi("Failed: ", "失败：")}${e?.message || e}`, type: "fail" });
+    progress.startCloseTimer(8000);
+    throw e;
+  }
 
   const parts: string[] = [
     `<h2>${bi("Bilingual full text", "双语对照全文")} — ${escapeHTML(
@@ -805,11 +831,16 @@ export async function translateToNote(
   await note.saveTx();
 
   progress.changeLine({
-    text: bi("Bilingual note created", "双语对照笔记已创建"),
+    text: incomplete
+      ? bi(
+          `Bilingual note created. ${incomplete} paragraphs failed and are shown in the original.`,
+          `双语对照笔记已创建，其中 ${incomplete} 段翻译失败，显示原文。`,
+        )
+      : bi("Bilingual note created", "双语对照笔记已创建"),
     progress: 100,
-    type: "success",
+    type: incomplete ? "fail" : "success",
   });
-  progress.startCloseTimer(3000);
+  progress.startCloseTimer(incomplete ? 8000 : 3000);
   await revealNotes([note]);
   return html;
 }

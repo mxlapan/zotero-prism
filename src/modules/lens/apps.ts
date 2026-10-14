@@ -27,6 +27,7 @@ import { getPref } from "../../utils/prefs";
 import { readerPageIndex } from "./readerPane";
 import { pageCount, pageText, pageViews, pdfReady } from "../../utils/reader";
 import { openProgress } from "../../utils/progress";
+import { errorText } from "../../utils/http";
 
 function progress(title: string) {
   return openProgress(title);
@@ -36,11 +37,35 @@ function builtin(id: string): PromptDef {
   return BUILTIN_PROMPTS.find((p) => p.id === id)!;
 }
 
+/**
+ * The closing line of a batch command. It used to read "written" even when
+ * every item had failed, and closed before the failure lines could be read.
+ */
+function finish(window: any, written: number, failures: unknown[], doneText: string) {
+  if (!failures.length) {
+    window.changeLine({ text: doneText, progress: 100, type: "success" });
+    window.startCloseTimer(3000);
+    return;
+  }
+  window.changeLine({
+    text: written
+      ? bi(
+          `${written} completed, ${failures.length} failed (see details above)`,
+          `已完成 ${written} 篇，失败 ${failures.length} 篇（详见上方）`,
+        )
+      : `${bi("No content generated. ", "未生成任何内容。")}${errorText(failures[failures.length - 1])}`,
+    progress: 100,
+    type: "fail",
+  });
+  window.startCloseTimer(10000);
+}
+
 /* ------------------------------------------------------------------ summary */
 
 export async function aiSummary(items: Zotero.Item[]) {
   const window = progress(bi("Summarising…", "正在总结…"));
   const notes: Zotero.Item[] = [];
+  const failures: unknown[] = [];
   let done = 0;
   for (const item of items) {
     const target = toRegularItem(item);
@@ -67,11 +92,11 @@ export async function aiSummary(items: Zotero.Item[]) {
       notes.push(note);
     } catch (e) {
       Zotero.debug(`[Prism] summary failed: ${e}`);
-      window.createLine({ text: `${bi("Failed: ", "失败：")}${e}`, type: "fail" });
+      failures.push(e);
+      window.createLine({ text: `${bi("Failed: ", "失败：")}${errorText(e)}`, type: "fail" });
     }
   }
-  window.changeLine({ text: bi("Summaries written", "总结已写入笔记"), progress: 100 });
-  window.startCloseTimer(3000);
+  finish(window, notes.length, failures, bi("Summaries written", "总结已写入笔记"));
   await revealNotes(notes);
 }
 
@@ -80,6 +105,7 @@ export async function aiSummary(items: Zotero.Item[]) {
 export async function aiOutline(items: Zotero.Item[]) {
   const window = progress(bi("Building outlines…", "正在生成大纲…"));
   const notes: Zotero.Item[] = [];
+  const failures: unknown[] = [];
   let done = 0;
   for (const item of items) {
     const target = toRegularItem(item);
@@ -105,11 +131,11 @@ export async function aiOutline(items: Zotero.Item[]) {
       );
       notes.push(note);
     } catch (e) {
-      window.createLine({ text: `${bi("Failed: ", "失败：")}${e}`, type: "fail" });
+      failures.push(e);
+      window.createLine({ text: `${bi("Failed: ", "失败：")}${errorText(e)}`, type: "fail" });
     }
   }
-  window.changeLine({ text: bi("Outlines written", "大纲已写入笔记"), progress: 100 });
-  window.startCloseTimer(3000);
+  finish(window, notes.length, failures, bi("Outlines written", "大纲已写入笔记"));
   await revealNotes(notes);
 }
 
@@ -173,6 +199,7 @@ export async function aiAnnotate(
 
   const maxPerPage = options.maxPerPage ?? 2;
   const plans: AnnotationPlan[] = [];
+  let lastError: unknown;
   const batchSize = 6;
   for (let start = 0; start < pages.length; start += batchSize) {
     const batch = pages.slice(start, start + batchSize);
@@ -196,7 +223,21 @@ ${body}`;
       plans.push(...parsePlans(answer));
     } catch (e) {
       Zotero.debug(`[Prism] annotate batch failed: ${e}`);
+      lastError = e;
     }
+  }
+  if (!plans.length) {
+    // Without this the run "succeeded" with 0 annotations when the model was
+    // unreachable, which looks exactly like a paper with nothing to mark.
+    window.changeLine({
+      text: lastError
+        ? `${bi("Failed: ", "失败：")}${errorText(lastError)}`
+        : bi("The model returned no passages to annotate.", "模型未返回需要标注的句子。"),
+      progress: 100,
+      type: "fail",
+    });
+    window.startCloseTimer(10000);
+    return;
   }
 
   window.changeLine({
@@ -498,6 +539,8 @@ export async function birdsEyeView(items: Zotero.Item[]): Promise<string> {
     "",
   ];
   let done = 0;
+  let written = 0;
+  let lastError: unknown;
   for (const item of items) {
     const target = toRegularItem(item);
     if (!target) continue;
@@ -520,8 +563,10 @@ ${clampTokens(text, 60_000)}`;
       digest = await chat([
         { role: "user", content: `${instruction}${replyLanguage(instruction, {})}\n\n${FORMULAS}` },
       ]);
+      written++;
     } catch (e) {
-      digest = `_${bi("Generation failed: ", "生成失败：")}${e}_`;
+      lastError = e;
+      digest = `_${bi("Generation failed: ", "生成失败：")}${errorText(e)}_`;
     }
     sections.push(
       `## ${String(target.getField("title") || "")}`,
@@ -554,6 +599,16 @@ ${clampTokens(text, 60_000)}`;
   }
 
   const markdown = sections.join("\n");
+  if (!written) {
+    // Every digest failed: a file of headings and error lines helps nobody.
+    window.changeLine({
+      text: `${bi("No content generated. ", "未生成任何内容。")}${errorText(lastError ?? bi("No processable items selected.", "所选条目中没有可处理的文献。"))}`,
+      progress: 100,
+      type: "fail",
+    });
+    window.startCloseTimer(10000);
+    return "";
+  }
   const path = await writeMarkdown(markdown);
   window.changeLine({
     text: path ? `${bi("Saved to", "已保存至")} ${path}` : bi("Done", "完成"),
@@ -590,6 +645,7 @@ export async function suggestTags(items: Zotero.Item[]): Promise<
   Array<{ item: Zotero.Item; tags: string[] }>
 > {
   const out: Array<{ item: Zotero.Item; tags: string[] }> = [];
+  let lastError: unknown;
   for (const item of items) {
     const target = toRegularItem(item);
     if (!target) continue;
@@ -606,8 +662,10 @@ export async function suggestTags(items: Zotero.Item[]): Promise<
       out.push({ item: target, tags });
     } catch (e) {
       Zotero.debug(`[Prism] tag suggestion failed: ${e}`);
+      lastError = e;
     }
   }
+  if (!out.length && lastError) throw lastError;
   return out;
 }
 

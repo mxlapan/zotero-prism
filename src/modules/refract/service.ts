@@ -14,7 +14,7 @@ import { config } from "../../../package.json";
 import { sleep } from "../../utils/window";
 import { bi } from "../../utils/locale";
 import { getPref } from "../../utils/prefs";
-import { request } from "../../utils/http";
+import { explainRequestFailure, request } from "../../utils/http";
 import { bestAttachment, toRegularItem } from "../../utils/item";
 import { openProgress } from "../../utils/progress";
 
@@ -79,12 +79,17 @@ async function uploadMultipart(
     offset += chunk.length;
   }
 
-  const xhr = await Zotero.HTTP.request("POST", url, {
-    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, ...headers },
-    body: body as any,
-    responseType: "text",
-    timeout: 300_000,
-  } as any);
+  let xhr: XMLHttpRequest;
+  try {
+    xhr = await Zotero.HTTP.request("POST", url, {
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, ...headers },
+      body: body as any,
+      responseType: "text",
+      timeout: 300_000,
+    } as any);
+  } catch (e) {
+    throw explainRequestFailure(e, url);
+  }
   return (xhr.response as string) || xhr.responseText || "";
 }
 
@@ -92,11 +97,29 @@ async function download(url: string, filename: string): Promise<ServiceResult> {
   const dir = PathUtils.join(Zotero.DataDirectory.dir, "prism", "translated");
   await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
   const path = PathUtils.join(dir, filename);
-  const xhr = await Zotero.HTTP.request("GET", url, {
-    responseType: "arraybuffer",
-    timeout: 300_000,
-  } as any);
-  await IOUtils.write(path, new Uint8Array(xhr.response as ArrayBuffer));
+  let xhr: XMLHttpRequest;
+  try {
+    xhr = await Zotero.HTTP.request("GET", url, {
+      responseType: "arraybuffer",
+      timeout: 300_000,
+    } as any);
+  } catch (e) {
+    throw explainRequestFailure(e, url);
+  }
+  const bytes = new Uint8Array((xhr.response as ArrayBuffer) || new ArrayBuffer(0));
+  // An error page or an empty body saved as .pdf attached a file that opens
+  // blank. Check the file is what its name says before keeping it.
+  const head = String.fromCharCode(...bytes.slice(0, 5));
+  const expected = /\.zip$/i.test(filename) ? "PK" : /\.pdf$/i.test(filename) ? "%PDF" : "";
+  if (!bytes.length || (expected && !head.startsWith(expected))) {
+    const text = new TextDecoder().decode(bytes.slice(0, 200)).trim();
+    throw new Error(
+      `${bi("The service did not return a valid file.", "服务未返回有效文件。")}${
+        text ? bi(` Response: ${text}`, `服务返回：${text}`) : ""
+      }`,
+    );
+  }
+  await IOUtils.write(path, bytes);
   return { path, filename };
 }
 

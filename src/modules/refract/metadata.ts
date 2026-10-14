@@ -30,8 +30,12 @@ export async function translateMetadata(
   }
 
   try {
+    let incomplete = 0;
     const translated = await translateBatch(payload, {
       to: options.to,
+      onIncomplete: (missing) => {
+        incomplete = missing;
+      },
       onProgress: (done, total) =>
         progress.changeLine({ progress: (done / total) * 100 }),
     });
@@ -75,9 +79,14 @@ export async function translateMetadata(
       }
     }
     progress.changeLine({
-      text: bi("Titles and abstracts translated", "标题与摘要已翻译"),
+      text: incomplete
+        ? bi(
+            `Translation complete. ${incomplete} titles or abstracts failed.`,
+            `翻译完成，其中 ${incomplete} 处标题或摘要翻译失败。`,
+          )
+        : bi("Titles and abstracts translated", "标题与摘要已翻译"),
       progress: 100,
-      type: "success",
+      type: incomplete ? "fail" : "success",
     });
     await revealNotes(notes);
   } catch (e: any) {

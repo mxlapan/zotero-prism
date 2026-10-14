@@ -28,6 +28,7 @@ import { createAnnotation } from "./lens/apps";
 import { getItem, toRegularItem } from "../utils/item";
 import { noteReadingEvent } from "./spectrum/reading";
 import { currentPageIndex, pageCount, pdfDocument } from "../utils/reader";
+import { showFailure } from "../utils/progress";
 
 const handlers: Array<[string, any]> = [];
 
@@ -413,7 +414,7 @@ function closeToolbarMenu(doc: Document) {
 }
 
 /* The menu rows, as data, so the native popup and the fallback agree. */
-type MenuRow = "sep" | { label: string; hint?: string; run: () => void };
+type MenuRow = "sep" | { label: string; hint?: string; run: () => unknown };
 
 function toolbarRows(reader: any): MenuRow[] {
   const translated = hasOverlay(reader);
@@ -481,14 +482,14 @@ function toolbarRows(reader: any): MenuRow[] {
       label: bi("AI outline → note", "AI 大纲 → 笔记"),
       run: async () => {
         const item = toRegularItem(getItem(reader.itemID));
-        if (item) (await import("./lens/apps")).aiOutline([item]);
+        if (item) await (await import("./lens/apps")).aiOutline([item]);
       },
     },
     {
       label: bi("AI annotate this PDF", "AI 标注本文"),
       run: async () => {
         const item = toRegularItem(getItem(reader.itemID));
-        if (item) (await import("./lens/apps")).aiAnnotate(item);
+        if (item) await (await import("./lens/apps")).aiAnnotate(item);
       },
     },
   );
@@ -529,7 +530,16 @@ function openMenu(
       el(
         doc,
         "div",
-        { on: { click: () => { menu.remove(); row.run(); } } },
+        {
+          on: {
+            click: () => {
+              menu.remove();
+              void Promise.resolve()
+                .then(() => row.run())
+                .catch((e: unknown) => showFailure(e, row.label));
+            },
+          },
+        },
         el(doc, "span", { text: row.label }),
         el(doc, "span", { text: row.hint || "", style: { opacity: "0.55" } }),
       ),
@@ -575,11 +585,17 @@ function onAnnotationMenu(event: any) {
   if (!ids.length) return;
   append({
     label: bi("Prism: explain", "棱镜：解释这条标注"),
-    onCommand: () => void explainAnnotations(reader, ids),
+    onCommand: () =>
+      void explainAnnotations(reader, ids).catch((e) =>
+        showFailure(e, bi("Explain annotation", "解释标注")),
+      ),
   });
   append({
     label: bi("Prism: translate comment", "棱镜：翻译这条标注"),
-    onCommand: () => void translateAnnotations(reader, ids),
+    onCommand: () =>
+      void translateAnnotations(reader, ids).catch((e) =>
+        showFailure(e, bi("Translate annotation", "翻译标注")),
+      ),
   });
 }
 

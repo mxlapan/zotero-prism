@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = await mkdtemp(join(tmpdir(), "prism-test-"));
-const files = ["pure.test.ts", "map.test.ts"];
+const files = ["pure.test.ts", "map.test.ts", "errors.test.ts"];
 let failed = 0;
 
 // Minimal stand-ins for the globals the plugin expects.

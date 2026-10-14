@@ -361,11 +361,25 @@ export const ENGINES: Engine[] = [
       const out: string[] = new Array(texts.length).fill("");
       const pattern = /<<(\d+)>>\s*([\s\S]*?)(?=\n?<<\d+>>|$)/g;
       let match: RegExpExecArray | null;
+      let found = 0;
       while ((match = pattern.exec(answer))) {
         const index = Number(match[1]) - 1;
-        if (index >= 0 && index < out.length) out[index] = match[2].trim();
+        if (index >= 0 && index < out.length) {
+          out[index] = match[2].trim();
+          found++;
+        }
       }
-      return out.map((value, index) => value || texts[index]);
+      if (!found) {
+        throw new Error(
+          bi(
+            `The AI model did not return the translation in numbered blocks. Response begins: ${answer.slice(0, 120)}`,
+            `AI 模型未按编号分段返回译文。返回内容开头：${answer.slice(0, 120)}`,
+          ),
+        );
+      }
+      // A block the model skipped stays empty, so it is counted as failed and
+      // handed to the next engine instead of passing the original off as done.
+      return out;
     },
   },
 ];
@@ -411,6 +425,8 @@ export async function translateBatch(
     from?: string;
     onProgress?: (done: number, total: number) => void;
     onEngineSwitch?: (from: string, to: string, reason: string) => void;
+    /** Some, but not all, of the texts could not be translated by any engine. */
+    onIncomplete?: (missing: number, reason: string) => void;
     shouldStop?: () => boolean;
   } = {},
 ): Promise<string[]> {
@@ -447,8 +463,10 @@ export async function translateBatch(
   };
 
   let failure: unknown;
+  /** The last error any engine hit, fatal or not, for the message below. */
+  const seen: { error?: unknown } = {};
   try {
-    pending = await runEngine(engineID, { from, to }, pending, results, report, options);
+    pending = await runEngine(engineID, { from, to }, pending, results, report, options, seen);
   } catch (e) {
     failure = e;
   }
@@ -464,14 +482,26 @@ export async function translateBatch(
       options.onEngineSwitch?.(engineID, nextID, errorText(failure));
       Zotero.debug(`[Prism] translation falling back to ${nextID}`);
       try {
-        pending = await runEngine(nextID, { from, to }, pending, results, report, options);
+        pending = await runEngine(nextID, { from, to }, pending, results, report, options, seen);
         failure = undefined;
       } catch (e) {
         failure = e;
       }
     }
   }
-  if (failure && !results.some(Boolean)) throw failure;
+  /* Engines that fail softly (timeouts, 5xx, empty replies) give back their
+     entries instead of throwing, so `failure` could be unset while nothing at
+     all was translated — and callers went on to file a note of empty
+     paragraphs. Nothing translated is an error, whatever the cause. */
+  const stopped = options.shouldStop?.() ?? false;
+  if (!stopped && (failure || pending.length) && !results.some(Boolean)) {
+    throw failure || seen.error || new Error(
+      bi("No translation engine returned a result.", "所有翻译引擎均未返回译文。"),
+    );
+  }
+  if (!stopped && pending.length) {
+    options.onIncomplete?.(pending.length, errorText(failure || seen.error));
+  }
 
   await cacheStore.flush();
   return results;
@@ -499,6 +529,7 @@ async function runEngine(
     onProgress?: (done: number, total: number) => void;
     shouldStop?: () => boolean;
   },
+  seen: { error?: unknown } = {},
 ): Promise<Entry[]> {
   if (!entries.length) return entries;
   const engine = engineByID(engineID);
@@ -534,8 +565,17 @@ async function runEngine(
         });
       } catch (e) {
         Zotero.debug(`[Prism] ${engineID} translation failed: ${errorText(e)}`);
+        seen.error = e;
         failed.push(...group);
-        if (/40[13]|unauthor|invalid/i.test(errorText(e))) fatal = e;
+        // A bad key, an empty account or a wrong address fails every batch the
+        // same way, so the rest go straight to the next engine.
+        const kind = (e as any)?.kind;
+        if (
+          ["auth", "quota", "address", "model", "unreachable", "certificate"].includes(kind) ||
+          /40[13]|unauthor|invalid/i.test(errorText(e))
+        ) {
+          fatal = e;
+        }
       }
       report(group.length);
     }

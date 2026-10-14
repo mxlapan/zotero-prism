@@ -151,6 +151,18 @@ export async function buildClaimMatrix(items: Zotero.Item[]): Promise<ClaimMatri
   }
 
   const progress = openProgress(bi("Indexing…", "正在建立索引…"), { progress: 5 });
+  try {
+    return await compareClaims(papers, progress);
+  } catch (e: any) {
+    // The progress line stayed on "Extracting claims" until its two-minute
+    // fallback, and nothing said the model had refused.
+    progress.changeLine({ text: `${bi("Failed: ", "失败：")}${e?.message || e}`, type: "fail" });
+    progress.startCloseTimer(10000);
+    return null;
+  }
+}
+
+async function compareClaims(papers: Zotero.Item[], progress: any): Promise<ClaimMatrix | null> {
   await ensureIndexed(papers);
 
   const claims: Claim[] = [];

@@ -13,6 +13,22 @@ import { config } from "../../package.json";
 /** Long enough for slow work to finish, short enough not to feel stuck. */
 const FALLBACK_MS = 120_000;
 
+/**
+ * Tell the user a command failed. Menu commands are started with `void`, so an
+ * error nobody catches went to the debug log only: the command just stopped,
+ * or — worse — carried on and filed an empty note.
+ */
+export function showFailure(error: unknown, what = "") {
+  const reason = String((error as any)?.message || error || "");
+  Zotero.debug(`[Prism] ${what || "command"} failed: ${reason}`);
+  new ztoolkit.ProgressWindow(config.addonName, { closeOnClick: true })
+    .createLine({
+      text: `${what ? `${what}: ` : ""}${reason}`.slice(0, 300),
+      type: "fail",
+    })
+    .show(8000);
+}
+
 export function openProgress(
   text: string,
   options: { progress?: number; type?: string } = {},

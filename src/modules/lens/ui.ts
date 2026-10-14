@@ -137,6 +137,16 @@ function renderActions(
   });
   meta.append(copy);
 
+  // A failed turn holds the error message; saving it made a note of the error.
+  if (turn.error) {
+    if (handlers.onRetry) {
+      const retry = el(doc, "button", { text: getString("panel-retry") });
+      retry.addEventListener("click", () => handlers.onRetry!(turn));
+      meta.append(retry);
+    }
+    return meta;
+  }
+
   const note = el(doc, "button", { text: getString("panel-to-note") });
   note.addEventListener("click", async () => {
     if (handlers.onSaveNote) {

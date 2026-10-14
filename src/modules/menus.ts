@@ -14,6 +14,7 @@ import { openAnnotationManager, buildMatrixForItems } from "./spectrum/annotatio
 import { openGraphView } from "./spectrum/graph";
 import { openDashboard } from "./beam/dashboard";
 import { claimMatrixToNote } from "./beam/claims";
+import { showFailure } from "../utils/progress";
 import { addItemWatch, addQueryWatch, runWatches } from "./beam/watchlist";
 import { enrol } from "./beam/review";
 import { saveCurrentGroup, restoreGroup, tabGroupsForMenu } from "./spectrum/tabs";
@@ -66,11 +67,11 @@ function register(menuID: string, target: any, menus: MenuData[]) {
 type Entry =
   | { separator: true }
   | { label: string; children: () => Entry[]; enabled?: () => boolean }
-  | { label: string; run: () => void; enabled?: () => boolean };
+  | { label: string; run: () => unknown; enabled?: () => boolean };
 
 const SEP: Entry = { separator: true };
 
-function item(label: string, run: () => void, enabled?: () => boolean): Entry {
+function item(label: string, run: () => unknown, enabled?: () => boolean): Entry {
   return { label, run, enabled };
 }
 
@@ -90,51 +91,51 @@ function itemEntries(): Entry[] {
   const first = () => contextItems()[0];
   return [
     item(label("menu-summarize", "AI summary → note", "AI 总结 → 笔记"), () =>
-      void aiSummary(items()),
+      aiSummary(items()),
     ),
     item(label("menu-outline", "AI outline → note", "AI 大纲 → 笔记"), () =>
-      void aiOutline(items()),
+      aiOutline(items()),
     ),
     item(label("menu-annotate", "AI annotate PDF", "AI 标注 PDF"), () => {
       const target = first();
-      if (target) void aiAnnotate(target);
+      if (target) return aiAnnotate(target);
     }),
     item(label("menu-fill-note", "AI fill note from template", "AI 按模板填写笔记"), () =>
-      void fillNoteFlow(items()),
+      fillNoteFlow(items()),
     ),
     item(label("menu-birdseye", "Bird's-eye view (Markdown)", "文献鸟瞰（Markdown）"), () =>
-      void birdsEyeView(items()),
+      birdsEyeView(items()),
     ),
     SEP,
     item(label("menu-matrix", "Literature matrix", "文献矩阵"), () =>
-      void buildMatrixForItems(items()),
+      buildMatrixForItems(items()),
     ),
     item(label("menu-claim-matrix", "Claim × evidence matrix", "观点 × 证据矩阵"), () =>
-      void claimMatrixToNote(items()),
+      claimMatrixToNote(items()),
     ),
     item(label("menu-index-library", "Index for semantic search", "建立语义索引"), () =>
-      void indexItems(items(), { force: true }),
+      indexItems(items(), { force: true }),
     ),
     SEP,
     item(
       label("menu-translate-meta", "Translate title and abstract", "翻译标题与摘要"),
-      () => void translateMetadata(items()),
+      () => translateMetadata(items()),
       () => refractOn(),
     ),
     item(
       label("menu-translate-fulltext", "Translate full text", "全文翻译"),
       () => {
         const target = first();
-        if (target) void translateViaService(target);
+        if (target) return translateViaService(target);
       },
       () => refractOn() && serviceConfigured(),
     ),
     SEP,
     item(label("menu-update-cited", "Update citations", "更新被引数"), () =>
-      void updateCitations(items()),
+      updateCitations(items()),
     ),
     item(label("menu-update-rank", "Update journal ranks", "更新期刊分区"), () =>
-      void updateRanks(items()),
+      updateRanks(items()),
     ),
     SEP,
     item(label("menu-add-watch", "Watch for new citations", "追踪新引用"), () => {
@@ -154,13 +155,13 @@ function refractOn() {
 function toolsEntries(): Entry[] {
   return [
     item(label("rhythm-title", "Dashboard", "仪表盘"), () =>
-      void openDashboard(mainWindow()),
+      openDashboard(mainWindow()),
     ),
     item(label("section-annotations", "Annotations", "标注管理"), () =>
-      void openAnnotationManager(mainWindow()),
+      openAnnotationManager(mainWindow()),
     ),
     item(label("matrix-title", "Literature matrix", "文献矩阵"), () =>
-      void openAnnotationManager(mainWindow(), "matrix"),
+      openAnnotationManager(mainWindow(), "matrix"),
     ),
     item(label("menu-tab-group-save", "Save tabs as a group", "将标签页保存为组"), () =>
       saveCurrentGroup(mainWindow()),
@@ -177,7 +178,7 @@ function toolsEntries(): Entry[] {
           groups.map((group) => `${group.name} (${group.tabs.length})`),
           index,
         );
-        if (ok) void restoreGroup(groups[index.value]);
+        if (ok) return restoreGroup(groups[index.value]);
       },
       () => tabGroupsForMenu().length > 0,
     ),
@@ -225,9 +226,10 @@ function fillPopup(doc: Document, popup: Element, entries: Entry[]) {
     if (entry.enabled && !entry.enabled()) node.setAttribute("disabled", "true");
     node.addEventListener("command", () => {
       try {
-        entry.run();
+        // Commands run as `void promise`; a rejection was lost to the debug log.
+        void Promise.resolve(entry.run()).catch((e) => showFailure(e, entry.label));
       } catch (e) {
-        Zotero.debug(`[Prism] menu action failed (${entry.label}): ${e}`);
+        showFailure(e, entry.label);
       }
     });
     popup.append(node);
@@ -324,16 +326,16 @@ export function registerMenus() {
   ]);
 }
 
-function toolsItem(key: string, fallbackEN: string, fallbackZH: string, handler: () => void): Entry {
+function toolsItem(key: string, fallbackEN: string, fallbackZH: string, handler: () => unknown): Entry {
   return item(label(key, fallbackEN, fallbackZH), handler);
 }
 
 /** The remaining Tools entries. */
 function extraToolsEntries(): Entry[] {
   return [
-    toolsItem("menu-graph", "Graph view", "关系图谱", () => void openGraphView(mainWindow())),
+    toolsItem("menu-graph", "Graph view", "关系图谱", () => openGraphView(mainWindow())),
     toolsItem("menu-nested-tags", "Nested tags", "嵌套标签", () => toggleNestedTags(mainWindow())),
-    toolsItem("menu-colors", "Name highlight colours…", "标注颜色命名…", () => void openColorEditor(mainWindow())),
+    toolsItem("menu-colors", "Name highlight colours…", "标注颜色命名…", () => openColorEditor(mainWindow())),
     submenu(label("menu-quick-filter", "Quick filter", "快速筛选"), filterEntries),
     submenu(label("menu-views", "Column views", "视图组"), viewEntries),
     toolsItem("menu-enrol", "Enrol annotations for review", "将标注加入复习队列", () => {
@@ -364,8 +366,8 @@ function extraToolsEntries(): Entry[] {
         void runWatches({ quiet: true });
       }
     }),
-    toolsItem("menu-watch-run", "Check watchlist now", "立即检查新文追踪", () => void runWatches({ reveal: true })),
-    toolsItem("menu-suggest-tags", "Suggest tags", "推荐标签", () => void tagFlow()),
+    toolsItem("menu-watch-run", "Check watchlist now", "立即检查新文追踪", () => runWatches({ reveal: true })),
+    toolsItem("menu-suggest-tags", "Suggest tags", "推荐标签", () => tagFlow()),
     toolsItem("menu-settings", "Settings…", "设置…", () => openSettings()),
   ];
 }
@@ -380,12 +382,12 @@ function extraToolsEntries(): Entry[] {
 function filterEntries(): Entry[] {
   const win = mainWindow();
   const rows: Entry[] = QUICK_TYPES.map((type) =>
-    item(itemTypeLabel(type), () => void quickFilterByType(win, type)),
+    item(itemTypeLabel(type), () => quickFilterByType(win, type)),
   );
   rows.push(
     SEP,
     item(label("menu-filter-clear", "Clear filter", "清除筛选"), () =>
-      void quickFilterByType(win, null),
+      quickFilterByType(win, null),
     ),
   );
   return rows;
@@ -425,7 +427,7 @@ function viewEntries(): Entry[] {
   if (!groups.length) return rows;
   rows.push(SEP);
   for (const group of groups) {
-    rows.push(item(group.name, () => void applyViewGroup(group.name)));
+    rows.push(item(group.name, () => applyViewGroup(group.name)));
   }
   rows.push(
     SEP,
