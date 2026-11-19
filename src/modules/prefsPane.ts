@@ -600,9 +600,19 @@ function wireTranslate(win: Window, doc: Document, $: Getter) {
     );
     return add(box);
   };
-  /** A grey note under the input column. */
+  /** A grey note under the input column, inset by the input boxes' margin. */
   const note = (...children: Array<Node | string | null>) =>
-    row("", el(doc, "div", { class: "prism-stat-label", style: "flex:1" }, ...children));
+    row(
+      "",
+      el(doc, "div", { class: "prism-stat-label", style: "flex:1;margin-inline-start:4px" }, ...children),
+    );
+
+  /* The line under the notes: what is still missing, until the Test button on
+     the engine row puts its result there. Rebuilt with the rows; empty hides
+     it. Editing a field puts the status back, since an earlier result says
+     nothing about the new key. */
+  let report: (text: string, color?: string) => void = () => {};
+  let showStatus = () => {};
 
   const renderKeys = () => {
     if (!keysBox) return;
@@ -611,23 +621,6 @@ function wireTranslate(win: Window, doc: Document, $: Getter) {
     const id = getPref<string>("refract.engine", "google");
     const engine = engineByID(id);
     const fields = engine.fields || [];
-
-    /* Beside the Test button: what is still missing, until a test result
-       replaces it; editing a field puts the status back, since an earlier
-       result no longer says anything about the new key. */
-    const result = el(doc, "span", {
-      class: "prism-stat-label",
-      style: "margin-inline-start:8px",
-    });
-    const showStatus = () => {
-      const missing = missingKeys(id);
-      result.textContent = missing.length
-        ? `${bi("Missing: ", "未填写：")}${missing
-            .map((field) => textOf(field.label))
-            .join(bi(", ", "、"))}`
-        : "";
-      result.style.color = missing.length ? "#d64d4d" : "";
-    };
 
     const stored = engineKeys(id);
     for (const field of fields) {
@@ -677,31 +670,47 @@ function wireTranslate(win: Window, doc: Document, $: Getter) {
       );
     }
 
-    const test = el(doc, "button", {
-      class: "prism-btn prism-btn-primary",
-      text: bi("Test engine", "测试引擎"),
-      on: {
-        click: async () => {
-          result.textContent = bi("testing…", "正在测试…");
-          result.style.color = "";
-          const started = Date.now();
-          try {
-            const out = await testEngine(id);
-            result.textContent = `✓ ${out} (${Date.now() - started} ms)`;
-            result.style.color = "#5fb236";
-          } catch (e) {
-            result.textContent = `✗ ${errorText(e)}`;
-            result.style.color = "#d64d4d";
-          }
-        },
-      },
+    const result = el(doc, "div", {
+      class: "prism-stat-label",
+      style: "flex:1;margin-inline-start:4px",
     });
-    const actions = doc.createXULElement("hbox");
-    actions.setAttribute("align", "center");
-    actions.append(test, result);
-    add(actions);
+    const resultRow = row("", result);
+    report = (text, color = "") => {
+      result.textContent = text;
+      result.style.color = color;
+      if (text) resultRow.removeAttribute("hidden");
+      else resultRow.setAttribute("hidden", "true");
+    };
+    showStatus = () => {
+      const missing = missingKeys(id);
+      report(
+        missing.length
+          ? `${bi("Missing: ", "未填写：")}${missing
+              .map((field) => textOf(field.label))
+              .join(bi(", ", "、"))}`
+          : "",
+        "#d64d4d",
+      );
+    };
     showStatus();
   };
+
+  $("prism-engine-test")?.addEventListener("click", async () => {
+    const id = getPref<string>("refract.engine", "google");
+    report(bi("testing…", "正在测试…"));
+    const started = Date.now();
+    let text: string;
+    let color: string;
+    try {
+      text = `✓ ${await testEngine(id)} (${Date.now() - started} ms)`;
+      color = "#5fb236";
+    } catch (e) {
+      text = `✗ ${errorText(e)}`;
+      color = "#d64d4d";
+    }
+    // Switched engines while waiting: the answer is about rows that are gone.
+    if (getPref<string>("refract.engine", "google") === id) report(text, color);
+  });
   renderKeys();
   engineList?.addEventListener("command", () => win.setTimeout(renderKeys, 60));
 }
