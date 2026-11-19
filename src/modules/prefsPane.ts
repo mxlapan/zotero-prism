@@ -17,6 +17,8 @@ import { clearIndex, indexItems, indexStats } from "./lens/rag";
 import { loadPrompts, savePrompt, deletePrompt, resetPrompts, type PromptDef } from "./lens/prompts";
 import { ENGINES, LANGUAGES, engineByID, fieldLabel } from "./refract/engines";
 import { knownRankFields } from "./spectrum/ranks";
+import { LABEL_NAMES } from "./spectrum/graph";
+import { LABEL_MODES } from "../lib/forcegraph";
 import { openColorEditor } from "./spectrum/colors";
 import { deckStats } from "./beam/review";
 import { listWatches, removeWatch, runWatches } from "./beam/watchlist";
@@ -613,6 +615,12 @@ function wireLibrary(win: Window, doc: Document, $: Getter) {
       { label: "Crossref", value: "crossref" },
     ],
     getPref<string>("spectrum.citedSource", "semanticscholar"),
+  );
+  fillMenulist(
+    doc,
+    $<any>("prism-graph-label"),
+    LABEL_MODES.map((mode) => ({ label: bi(...LABEL_NAMES[mode]), value: mode })),
+    getPref<string>("spectrum.graphLabel", "citation"),
   );
   $("prism-colors")?.addEventListener("click", () => void openColorEditor(win));
   $("prism-known-fields")?.addEventListener("click", () => {

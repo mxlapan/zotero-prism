@@ -29,6 +29,7 @@ declare namespace _ZoteroTypes {
       "spectrum.citedSource": string;
       "spectrum.citedMap": string;
       "spectrum.ratingColumn": boolean;
+      "spectrum.graphLabel": string;
       "spectrum.viewGroups": string;
       "spectrum.annotationColors": string;
       "spectrum.tabGroups": string;

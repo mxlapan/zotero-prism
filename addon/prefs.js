@@ -24,6 +24,7 @@ pref("spectrum.citedColumn", true);
 pref("spectrum.citedSource", "semanticscholar");
 pref("spectrum.citedMap", "Total(S2)=, Highly Influential=HI, Background=B, Methods=M, Results=R");
 pref("spectrum.ratingColumn", true);
+pref("spectrum.graphLabel", "citation");
 pref("spectrum.viewGroups", "[]");
 pref("spectrum.annotationColors", "{}");
 pref("spectrum.tabGroups", "[]");

@@ -1,6 +1,6 @@
 import { chunkText, splitSentences, estimateTokens, clampTokens, dropReferences, hash, lexTokens } from "../src/utils/text";
 import { quantize, dequantize, cosine } from "../src/lib/vector";
-import { tagLinks } from "../src/lib/forcegraph";
+import { tagLinks, nodeLabel, fitLabel } from "../src/lib/forcegraph";
 import {
   toLines,
   toParagraphs,
@@ -744,6 +744,28 @@ ok("a status tag on every paper adds no links", !pair(6, 7) && !pair(4, 9), JSON
 ok("papers sharing a specific tag are linked", !!pair(4, 5) && !!pair(1, 3));
 ok("two shared tags pull harder than one", (pair(1, 2)?.weight ?? 0) > (pair(1, 3)?.weight ?? 0),
    JSON.stringify([pair(1, 2), pair(1, 3)]));
+
+/* ---- graph: node labels (GitHub #1) ---- */
+const paper = {
+  citation: "Schiffman 2014",
+  title: "Diagnostic Criteria for  Temporomandibular Disorders",
+  shortTitle: "",
+  venue: "J Oral Facial Pain Headache",
+  year: "2014",
+};
+ok("label: author & year by default", nodeLabel(paper, "citation") === "Schiffman 2014");
+ok("label: title, whitespace tidied", nodeLabel(paper, "title") === "Diagnostic Criteria for Temporomandibular Disorders");
+ok("label: short title falls back to the title", nodeLabel(paper, "shortTitle") === nodeLabel(paper, "title"));
+ok("label: publication and year", nodeLabel(paper, "venue") === "J Oral Facial Pain Headache 2014");
+ok("label: none is empty", nodeLabel(paper, "none") === "");
+ok("label: a missing field falls back to the citation", nodeLabel({ citation: "Anon. n.d." }, "venue") === "Anon. n.d.");
+ok("label: an unknown mode is the citation", nodeLabel(paper, "bogus") === "Schiffman 2014");
+const charWidth = (text: string) => [...text].reduce((w, ch) => w + (/[\u4e00-\u9fff]/.test(ch) ? 11 : 6), 0);
+const cut = fitLabel(paper.title, 120, charWidth);
+ok("fitLabel cuts to width with an ellipsis", cut.endsWith("…") && charWidth(cut) <= 120, cut);
+ok("fitLabel leaves a short label alone", fitLabel("Schiffman 2014", 120, charWidth) === "Schiffman 2014");
+const cjk = fitLabel("颞下颌关节紊乱病的诊断标准及其临床应用研究", 100, charWidth);
+ok("fitLabel measures CJK by width, not count", cjk.endsWith("…") && charWidth(cjk) <= 100, cjk);
 
 /* ---- AI answers ---- */
 

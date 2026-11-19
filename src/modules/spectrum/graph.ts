@@ -5,12 +5,34 @@
 
 import { bi } from "../../utils/locale";
 import { el } from "../../utils/dom";
+import { getPref, setPref } from "../../utils/prefs";
 import { injectAssets } from "../lens/ui";
-import { ForceGraph, tagLinks, type GraphEdge } from "../../lib/forcegraph";
+import {
+  ForceGraph,
+  LABEL_MODES,
+  nodeLabel,
+  tagLinks,
+  type GraphEdge,
+  type LabelFields,
+  type LabelMode,
+} from "../../lib/forcegraph";
 import { itemCitation, toRegularItem } from "../../utils/item";
 import { referencesOf } from "../beam/gapRadar";
 
 let tabID = "";
+
+export const LABEL_NAMES: Record<LabelMode, [string, string]> = {
+  citation: ["Author & year", "作者+年份"],
+  title: ["Title", "标题"],
+  shortTitle: ["Short title", "短标题"],
+  venue: ["Publication & year", "期刊+年份"],
+  none: ["None", "不显示"],
+};
+
+function labelMode(): LabelMode {
+  const mode = getPref<string>("spectrum.graphLabel", "citation") as LabelMode;
+  return LABEL_MODES.includes(mode) ? mode : "citation";
+}
 
 const TYPE_COLORS: Record<string, string> = {
   journalArticle: "#2ea8e5",
@@ -76,7 +98,39 @@ export async function openGraphView(win: Window) {
     text: bi("Locate selected", "定位选中条目"),
   });
   const status = el(doc, "span", { class: "prism-chip", text: bi("building…", "正在构建…") });
-  toolbar.append(search, locate, status);
+
+  /* Which field the nodes are labelled with (GitHub #1). */
+  const picker = el(doc, "span", {
+    class: "prism-row",
+    style: { gap: "4px", marginInlineStart: "6px" },
+  });
+  picker.append(el(doc, "span", { class: "prism-stat-label", text: bi("Label:", "节点文字：") }));
+  const chips = new Map<LabelMode, HTMLElement>();
+  const markActive = (mode: LabelMode) => {
+    for (const [id, chip] of chips) {
+      const active = id === mode;
+      chip.style.background = active ? "var(--prism-accent)" : "";
+      chip.style.color = active ? "#fff" : "";
+    }
+  };
+  for (const mode of LABEL_MODES) {
+    const [en, zh] = LABEL_NAMES[mode];
+    const chip = el(doc, "span", {
+      class: "prism-tag",
+      text: bi(en, zh),
+      on: {
+        click: () => {
+          setPref("spectrum.graphLabel", mode);
+          markActive(mode);
+          graph.relabel((node) => nodeLabel(node.data as LabelFields, mode));
+        },
+      },
+    });
+    chips.set(mode, chip);
+    picker.append(chip);
+  }
+  markActive(labelMode());
+  toolbar.append(search, locate, status, picker);
 
   const canvas = el(doc, "canvas", {
     style: { width: "100%", height: "100%", display: "block" },
@@ -114,7 +168,10 @@ export async function openGraphView(win: Window) {
       tip.style.display = "block";
       tip.style.left = `${x + 14}px`;
       tip.style.top = `${y + 14}px`;
-      tip.textContent = node.data?.title || node.label;
+      // Whatever the label shows, the tip names the paper in full.
+      const fields = node.data as LabelFields | undefined;
+      tip.textContent =
+        [fields?.citation, fields?.title].filter(Boolean).join(" · ") || node.label;
     },
   });
 
@@ -133,6 +190,9 @@ export async function openGraphView(win: Window) {
   };
 
   const { nodes, edges } = await buildGraph(win);
+  // Read now, not before the build: the picker may have been clicked meanwhile.
+  const mode = labelMode();
+  for (const node of nodes) node.label = nodeLabel(node.data, mode);
   graph.setData(nodes, edges);
   status.textContent = `${nodes.length} ${bi("items", "个条目")} · ${edges.length} ${bi("links", "条连线")}`;
 
@@ -144,7 +204,12 @@ export async function openGraphView(win: Window) {
     }
     graph.setHighlight(
       nodes
-        .filter((node) => `${node.label} ${node.data?.title || ""}`.toLowerCase().includes(query))
+        .filter((node) =>
+          [node.data.citation, node.data.title, node.data.shortTitle, node.data.venue]
+            .join(" ")
+            .toLowerCase()
+            .includes(query),
+        )
         .map((node) => node.id),
     );
   });
@@ -171,13 +236,35 @@ async function buildGraph(win: Window) {
   }
   items = items.filter((item) => item.isRegularItem?.()).slice(0, 400);
 
-  const nodes = items.map((item) => ({
-    id: String(item.id),
-    label: itemCitation(item),
-    group: item.itemType,
-    weight: 1 + (item.getTags?.().length || 0) * 0.3,
-    data: { title: String(item.getField("title") || "") },
-  }));
+  const field = (item: Zotero.Item, name: string) => {
+    try {
+      return String(item.getField(name as any) || "");
+    } catch {
+      return ""; // not a field of this item type
+    }
+  };
+  const nodes = items.map((item) => {
+    const data: LabelFields = {
+      citation: itemCitation(item),
+      title: field(item, "title"),
+      shortTitle: field(item, "shortTitle"),
+      venue:
+        field(item, "journalAbbreviation") ||
+        field(item, "publicationTitle") ||
+        field(item, "proceedingsTitle") ||
+        field(item, "conferenceName") ||
+        field(item, "university") ||
+        field(item, "publisher"),
+      year: String(item.getField("date") || "").match(/\d{4}/)?.[0] || "",
+    };
+    return {
+      id: String(item.id),
+      label: data.citation,
+      group: item.itemType,
+      weight: 1 + (item.getTags?.().length || 0) * 0.3,
+      data,
+    };
+  });
 
   const present = new Set(items.map((item) => item.id));
   const edges: GraphEdge[] = [];

@@ -9,6 +9,9 @@
 /** How far the pointer may travel while pressed and still count as a click, in px. */
 const DRAG_SLOP = 4;
 
+/** The widest a node label may be, in screen px — about 30 Latin characters. */
+const LABEL_WIDTH = 170;
+
 export interface GraphNode {
   id: string;
   label: string;
@@ -27,6 +30,64 @@ export interface GraphEdge {
   target: string;
   weight?: number;
   kind?: string;
+}
+
+/** What the text under each node says. */
+export type LabelMode = "citation" | "title" | "shortTitle" | "venue" | "none";
+
+export const LABEL_MODES: LabelMode[] = ["citation", "title", "shortTitle", "venue", "none"];
+
+export interface LabelFields {
+  /** "Author Year" — the fallback for every other mode */
+  citation: string;
+  title?: string;
+  shortTitle?: string;
+  venue?: string;
+  year?: string;
+}
+
+/**
+ * The label a node shows under the chosen mode.
+ *
+ * Author and year was the only choice, and two papers by one group in one year
+ * are indistinguishable that way. Each mode falls back to the citation, so an
+ * item missing the chosen field still has a name.
+ */
+export function nodeLabel(fields: LabelFields, mode: string): string {
+  const clean = (value?: string) => (value || "").replace(/\s+/g, " ").trim();
+  switch (mode) {
+    case "none":
+      return "";
+    case "title":
+      return clean(fields.title) || fields.citation;
+    case "shortTitle":
+      return clean(fields.shortTitle) || clean(fields.title) || fields.citation;
+    case "venue": {
+      const venue = clean(fields.venue);
+      return venue ? `${venue} ${clean(fields.year)}`.trim() : fields.citation;
+    }
+    default:
+      return fields.citation;
+  }
+}
+
+/**
+ * Cut a label to a width, ending it with an ellipsis.
+ *
+ * A fixed character count does not work once titles are on the table: 26
+ * Latin characters are 130px, 26 Chinese ones twice that.
+ */
+export function fitLabel(text: string, max: number, measure: (text: string) => number): string {
+  if (!text || measure(text) <= max) return text;
+  const chars = [...text];
+  let low = 0;
+  let high = chars.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (measure(`${chars.slice(0, mid).join("").trimEnd()}…`) <= max) low = mid;
+    else high = mid - 1;
+  }
+  return low ? `${chars.slice(0, low).join("").trimEnd()}…` : "";
 }
 
 export interface GraphOptions {
@@ -193,6 +254,12 @@ export class ForceGraph {
     this.offsetY = this.canvas.height / 2 - ((minY + maxY) / 2) * this.scale;
   }
 
+  /** Change every node's label in place, without restarting the layout. */
+  relabel(labelOf: (node: GraphNode) => string) {
+    for (const node of this.nodes) node.label = labelOf(node);
+    this.draw();
+  }
+
   setHighlight(ids: string[]) {
     this.highlight = new Set(ids);
     this.draw();
@@ -354,9 +421,11 @@ export class ForceGraph {
         Number(this.highlight.has(b.id)) - Number(this.highlight.has(a.id)) ||
         (b.weight || 1) - (a.weight || 1),
     );
+    const measure = (text: string) => ctx.measureText(text).width;
     for (const node of order) {
-      const text = node.label.slice(0, 26);
-      const width = ctx.measureText(text).width;
+      const text = fitLabel(node.label, LABEL_WIDTH, measure);
+      if (!text) continue;
+      const width = measure(text);
       const x = node.x * this.scale + this.offsetX;
       const y =
         node.y * this.scale +
