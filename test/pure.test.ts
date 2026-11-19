@@ -1,6 +1,7 @@
 import { chunkText, splitSentences, estimateTokens, clampTokens, dropReferences, hash, lexTokens } from "../src/utils/text";
 import { quantize, dequantize, cosine } from "../src/lib/vector";
 import { tagLinks, nodeLabel, fitLabel } from "../src/lib/forcegraph";
+import { ENGINES, requiredKeys } from "../src/modules/refract/engines";
 import {
   toLines,
   toParagraphs,
@@ -766,6 +767,31 @@ ok("fitLabel cuts to width with an ellipsis", cut.endsWith("…") && charWidth(c
 ok("fitLabel leaves a short label alone", fitLabel("Schiffman 2014", 120, charWidth) === "Schiffman 2014");
 const cjk = fitLabel("颞下颌关节紊乱病的诊断标准及其临床应用研究", 100, charWidth);
 ok("fitLabel measures CJK by width, not count", cjk.endsWith("…") && charWidth(cjk) <= 100, cjk);
+
+/* ---- translation engine credentials ---- */
+// What each engine's keys are stored under. Renaming one silently drops every
+// user's saved key for it, so the names are pinned here.
+const storedKeys: Record<string, string[]> = {
+  deeplx: ["endpoint"],
+  deepl: ["authKey"],
+  microsoft: ["key", "region"],
+  baidu: ["appid", "key"],
+  youdao: ["appKey", "appSecret"],
+  niutrans: ["apikey"],
+  libretranslate: ["endpoint", "apiKey"],
+};
+for (const engine of ENGINES) {
+  const names = (engine.fields || []).map((field) => field.name);
+  ok(`engine ${engine.id}: stored key names unchanged`,
+     JSON.stringify(names) === JSON.stringify(storedKeys[engine.id] || []), JSON.stringify(names));
+  ok(`engine ${engine.id}: says where its credentials come from`, !!engine.help?.text?.[0] && !!engine.help?.text?.[1]);
+  for (const field of engine.fields || []) {
+    ok(`engine ${engine.id}.${field.name}: labelled in both languages`, !!field.label[0] && !!field.label[1]);
+  }
+}
+const microsoft = ENGINES.find((engine) => engine.id === "microsoft")!;
+ok("microsoft runs without a region (Global resource)",
+   JSON.stringify(requiredKeys(microsoft).map((field) => field.name)) === '["key"]');
 
 /* ---- AI answers ---- */
 

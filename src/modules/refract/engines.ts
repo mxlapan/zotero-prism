@@ -19,30 +19,55 @@ export interface EngineContext {
   keys: Record<string, string>;
 }
 
-/** Display names for the credential fields in `needsKey`. */
-export function fieldLabel(field: string): string {
-  const labels: Record<string, [string, string]> = {
-    endpoint: ["Endpoint", "服务地址"],
-    authKey: ["Auth key", "认证密钥"],
-    key: ["Key", "密钥"],
-    region: ["Region", "区域"],
-    appid: ["App ID", "APP ID"],
-    appKey: ["App key", "应用 ID"],
-    appSecret: ["App secret", "应用密钥"],
-    apikey: ["API key", "API 密钥"],
-  };
-  const pair = labels[field];
-  return pair ? bi(pair[0], pair[1]) : field;
+/** English and Chinese, picked by `bi` at the point of display. */
+type Text = [string, string];
+
+/**
+ * One credential an engine takes.
+ *
+ * The settings used to show a bare "Key" or "App ID" with an empty box beside
+ * it, and nothing said which console it came from, whether it was secret or
+ * what a valid one looked like — so each field now carries that with it, in the
+ * console's own words.
+ */
+export interface KeyField {
+  /** what it is stored under in `refract.engineKeys` — never rename */
+  name: string;
+  label: Text;
+  placeholder?: string | Text;
+  /** masked, like a password */
+  secret?: boolean;
+  /** the engine runs without it */
+  optional?: boolean;
+  hint?: Text;
 }
 
 export interface Engine {
   id: string;
   label: string;
-  /** free engines need no credentials at all */
-  needsKey?: string[];
+  /** the credentials, in the order the settings show them; free engines have none */
+  fields?: KeyField[];
+  /** where the credentials come from */
+  help?: { text: Text; url?: string };
   /** how many strings one call can take */
   batch: number;
   translate: (texts: string[], ctx: EngineContext) => Promise<string[]>;
+}
+
+export function textOf(value: string | Text | undefined): string {
+  if (!value) return "";
+  return typeof value === "string" ? value : bi(value[0], value[1]);
+}
+
+/** The fields an engine cannot run without. */
+export function requiredKeys(engine: Engine): KeyField[] {
+  return (engine.fields || []).filter((field) => !field.optional);
+}
+
+/** Required fields left empty, for the settings and the error message alike. */
+export function missingKeys(id: string): KeyField[] {
+  const keys = engineKeys(id);
+  return requiredKeys(engineByID(id)).filter((field) => !keys[field.name]);
 }
 
 const cacheStore = new JSONStore<Record<string, string>>("translation-cache", {});
@@ -125,6 +150,12 @@ export const ENGINES: Engine[] = [
     get label() {
       return bi("Google (free)", "Google（免费）");
     },
+    help: {
+      text: [
+        "Free, no key. Requests go to translate.googleapis.com, which some networks cannot reach.",
+        "免费，无需密钥。请求发往 translate.googleapis.com，部分网络环境下无法访问。",
+      ],
+    },
     batch: 1,
     async translate(texts, ctx) {
       const out: string[] = [];
@@ -144,7 +175,20 @@ export const ENGINES: Engine[] = [
     get label() {
       return bi("DeepLX (self-hosted)", "DeepLX（自行部署）");
     },
-    needsKey: ["endpoint"],
+    fields: [
+      {
+        name: "endpoint",
+        label: ["Endpoint", "服务地址"],
+        placeholder: "http://127.0.0.1:1188/translate",
+      },
+    ],
+    help: {
+      text: [
+        "A DeepLX server you run yourself. Enter its full address, including the /translate path.",
+        "需自行部署 DeepLX 服务。填写完整地址，包含 /translate 路径。",
+      ],
+      url: "https://github.com/OwO-Network/DeepLX",
+    },
     batch: 1,
     async translate(texts, ctx) {
       const endpoint = ctx.keys.endpoint || "http://127.0.0.1:1188/translate";
@@ -167,7 +211,25 @@ export const ENGINES: Engine[] = [
   {
     id: "deepl",
     label: "DeepL",
-    needsKey: ["authKey"],
+    fields: [
+      {
+        name: "authKey",
+        label: ["Authentication key", "API 密钥"],
+        secret: true,
+        placeholder: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx",
+        hint: [
+          "A key ending in :fx is a free-plan key and goes to the free API automatically.",
+          "以 :fx 结尾的是免费版密钥，会自动使用免费版接口。",
+        ],
+      },
+    ],
+    help: {
+      text: [
+        "Needs a DeepL API plan (Free or Pro) — a DeepL Pro app subscription has no API key. Copy it from Account → API Keys.",
+        "需要 DeepL API 套餐（免费版或专业版均可），DeepL Pro 应用订阅不含 API 密钥。在账户的「API Keys」页面复制。",
+      ],
+      url: "https://www.deepl.com/your-account/keys",
+    },
     batch: 25,
     async translate(texts, ctx) {
       const key = ctx.keys.authKey || "";
@@ -197,7 +259,30 @@ export const ENGINES: Engine[] = [
     get label() {
       return bi("Microsoft Translator", "微软翻译");
     },
-    needsKey: ["key", "region"],
+    fields: [
+      {
+        name: "key",
+        label: ["Key", "密钥"],
+        secret: true,
+        placeholder: ["KEY 1 or KEY 2", "密钥 1 或密钥 2"],
+      },
+      {
+        name: "region",
+        label: ["Region", "区域"],
+        optional: true,
+        placeholder: [
+          "e.g. eastasia — leave empty for a Global resource",
+          "如 eastasia；资源区域为「全局」时留空",
+        ],
+      },
+    ],
+    help: {
+      text: [
+        "Azure portal → your Translator resource → Keys and Endpoint: copy KEY 1 and Location/Region.",
+        "Azure 门户 → 你创建的「Translator」资源 → 「密钥和终结点」：复制「密钥 1」和「位置/区域」。",
+      ],
+      url: "https://learn.microsoft.com/azure/ai-services/translator/create-translator-resource",
+    },
     batch: 25,
     async translate(texts, ctx) {
       const url =
@@ -220,7 +305,17 @@ export const ENGINES: Engine[] = [
     get label() {
       return bi("Baidu", "百度翻译");
     },
-    needsKey: ["appid", "key"],
+    fields: [
+      { name: "appid", label: ["APP ID", "APP ID"], placeholder: "20xxxxxxxxxxxxxxx" },
+      { name: "key", label: ["Secret key", "密钥"], secret: true },
+    ],
+    help: {
+      text: [
+        "Baidu Translate open platform → Console → Developer info: APP ID and secret key. General text translation must be enabled.",
+        "百度翻译开放平台 → 管理控制台 → 开发者信息：复制 APP ID 和密钥。需先开通「通用文本翻译」。",
+      ],
+      url: "https://fanyi-api.baidu.com/manage/developer",
+    },
     batch: 1,
     async translate(texts, ctx) {
       const out: string[] = [];
@@ -258,7 +353,17 @@ export const ENGINES: Engine[] = [
     get label() {
       return bi("Youdao", "有道翻译");
     },
-    needsKey: ["appKey", "appSecret"],
+    fields: [
+      { name: "appKey", label: ["App ID", "应用 ID"] },
+      { name: "appSecret", label: ["App secret", "应用密钥"], secret: true },
+    ],
+    help: {
+      text: [
+        "Youdao AI open platform → create an application with the Text Translation service bound to it, then copy its app ID and app secret.",
+        "有道智云 AI 开放平台 → 创建应用并绑定「文本翻译」服务，然后复制应用 ID 和应用密钥。",
+      ],
+      url: "https://ai.youdao.com/console/",
+    },
     batch: 1,
     async translate(texts, ctx) {
       const out: string[] = [];
@@ -292,6 +397,10 @@ export const ENGINES: Engine[] = [
           },
         );
         const data = JSON.parse(body);
+        // A rejected key still answers 200, with only an error code to say so.
+        if (data.errorCode && data.errorCode !== "0") {
+          throw new Error(`Youdao error ${data.errorCode}`);
+        }
         out.push((data.translation || []).join("\n"));
       }
       return out;
@@ -302,7 +411,14 @@ export const ENGINES: Engine[] = [
     get label() {
       return bi("NiuTrans", "小牛翻译");
     },
-    needsKey: ["apikey"],
+    fields: [{ name: "apikey", label: ["API key", "API-KEY"], secret: true }],
+    help: {
+      text: [
+        "NiuTrans open platform → Console → API-KEY.",
+        "小牛翻译开放平台 → 控制台 → API-KEY。",
+      ],
+      url: "https://niutrans.com/cloud/account_info/info",
+    },
     batch: 1,
     async translate(texts, ctx) {
       const out: string[] = [];
@@ -321,7 +437,9 @@ export const ENGINES: Engine[] = [
             timeout: 25000,
           },
         );
-        out.push(JSON.parse(body).tgt_text || "");
+        const data = JSON.parse(body);
+        if (data.error_code) throw new Error(`NiuTrans ${data.error_code}: ${data.error_msg || ""}`);
+        out.push(data.tgt_text || "");
       }
       return out;
     },
@@ -329,7 +447,29 @@ export const ENGINES: Engine[] = [
   {
     id: "libretranslate",
     label: "LibreTranslate",
-    needsKey: ["endpoint"],
+    fields: [
+      {
+        name: "endpoint",
+        label: ["Endpoint", "服务地址"],
+        placeholder: "http://127.0.0.1:5000/translate",
+      },
+      // Read below as `apiKey` all along, but there was no field to enter it,
+      // so a server that wants one could never be used.
+      {
+        name: "apiKey",
+        label: ["API key", "API 密钥"],
+        secret: true,
+        optional: true,
+        placeholder: ["only if the server asks for one", "服务器要求时才需填写"],
+      },
+    ],
+    help: {
+      text: [
+        "A LibreTranslate server, your own or a public one. Enter its full address, including the /translate path.",
+        "自行部署或公共的 LibreTranslate 服务。填写完整地址，包含 /translate 路径。",
+      ],
+      url: "https://github.com/LibreTranslate/LibreTranslate",
+    },
     batch: 1,
     async translate(texts, ctx) {
       const endpoint = ctx.keys.endpoint || "http://127.0.0.1:5000/translate";
@@ -355,6 +495,12 @@ export const ENGINES: Engine[] = [
     id: "llm",
     get label() {
       return bi("AI model (uses your Prism model)", "AI 模型（使用棱镜的模型配置）");
+    },
+    help: {
+      text: [
+        "Uses the chat model set in the AI tab — no separate key here.",
+        "使用「AI」标签页中配置的对话模型，此处无需单独填写密钥。",
+      ],
     },
     batch: 12,
     async translate(texts, ctx) {
@@ -414,10 +560,35 @@ export function engineKeys(id: string): Record<string, string> {
 }
 
 export function engineReady(id: string): boolean {
+  return !missingKeys(id).length;
+}
+
+/**
+ * One short request straight to an engine — no cache, no fallback — for the
+ * Test button in the settings. Going through `translateBatch` would answer from
+ * the cache, or quietly from another engine, and prove nothing.
+ */
+export async function testEngine(id: string): Promise<string> {
   const engine = engineByID(id);
-  if (!engine.needsKey?.length) return true;
-  const keys = engineKeys(id);
-  return engine.needsKey.every((name) => !!keys[name]);
+  const missing = missingKeys(id);
+  if (missing.length) throw new Error(missingMessage(engine, missing));
+  const [out] = await engine.translate(["The results are shown in Table 2."], {
+    from: "en",
+    to: getPref<string>("refract.targetLang", "zh-CN"),
+    keys: engineKeys(id),
+  });
+  if (!out?.trim()) {
+    throw new Error(bi("The engine answered with nothing.", "引擎返回了空结果。"));
+  }
+  return out.trim();
+}
+
+function missingMessage(engine: Engine, missing: KeyField[]): string {
+  const fields = missing.map((field) => textOf(field.label)).join(bi(", ", "、"));
+  return bi(
+    `${engine.label}: missing ${fields}. Add it under Settings → Prism → Translation.`,
+    `${engine.label}缺少${fields}，请在「设置 → Prism → 翻译」中填写。`,
+  );
 }
 
 /* -------------------------------------------------------------- entry points */
@@ -449,17 +620,8 @@ export async function translateBatch(
 ): Promise<string[]> {
   const engineID = options.engine || getPref<string>("refract.engine", "google");
   const engine = engineByID(engineID);
-  if (!engineReady(engineID)) {
-    const keys = engineKeys(engineID);
-    const missing = (engine.needsKey || []).filter((name) => !keys[name]);
-    const fields = missing.map(fieldLabel).join(bi(", ", "、"));
-    throw new Error(
-      bi(
-        `${engine.label}: missing ${fields}. Add it under Settings → Prism → Translation.`,
-        `${engine.label}缺少${fields}，请在「设置 → Prism → 翻译」中填写。`,
-      ),
-    );
-  }
+  const missing = missingKeys(engineID);
+  if (missing.length) throw new Error(missingMessage(engine, missing));
   const to = options.to || getPref<string>("refract.targetLang", "zh-CN");
   const from = options.from || getPref<string>("refract.sourceLang", "auto");
 
@@ -618,7 +780,7 @@ function fallbackOrder(engineID: string): string[] {
       engine.id !== engineID &&
       engine.id !== "llm" &&
       engineReady(engine.id) &&
-      (!engine.needsKey?.length ||
+      (!requiredKeys(engine).length ||
         Object.keys(engineKeys(engine.id)).length > 0),
   ).map((engine) => engine.id);
 }

@@ -15,7 +15,16 @@ import {
 import { bridgeStatus } from "./lens/bridge";
 import { clearIndex, indexItems, indexStats } from "./lens/rag";
 import { loadPrompts, savePrompt, deletePrompt, resetPrompts, type PromptDef } from "./lens/prompts";
-import { ENGINES, LANGUAGES, engineByID, fieldLabel } from "./refract/engines";
+import {
+  ENGINES,
+  LANGUAGES,
+  engineByID,
+  engineKeys,
+  missingKeys,
+  testEngine,
+  textOf,
+} from "./refract/engines";
+import { errorText } from "../utils/http";
 import { knownRankFields } from "./spectrum/ranks";
 import { LABEL_NAMES } from "./spectrum/graph";
 import { LABEL_MODES } from "../lib/forcegraph";
@@ -560,43 +569,158 @@ function wireTranslate(win: Window, doc: Document, $: Getter) {
   );
 
   const keysBox = $("prism-engine-keys");
+  /* Read afresh on every keystroke. The box used to keep the snapshot it was
+     drawn from, so filling in Baidu's APP ID and then its key saved the key
+     over a copy without the APP ID — and the APP ID was gone on reopening. */
+  const saveKey = (id: string, name: string, value: string) => {
+    const all = getJSONPref<Record<string, Record<string, string>>>("refract.engineKeys", {});
+    const keys = { ...(all[id] || {}) };
+    if (value) keys[name] = value;
+    else delete keys[name];
+    setJSONPref("refract.engineKeys", { ...all, [id]: keys });
+  };
   const renderKeys = () => {
     if (!keysBox) return;
     clear(keysBox);
     const id = getPref<string>("refract.engine", "google");
     const engine = engineByID(id);
-    if (!engine.needsKey?.length) {
-      keysBox.append(
-        el(doc, "div", {
-          class: "prism-stat-label",
-          text: bi("No credentials needed.", "无需密钥。"),
+    const fields = engine.fields || [];
+
+    const status = el(doc, "span", { class: "prism-chip" });
+    const refreshStatus = () => {
+      const missing = missingKeys(id);
+      if (!fields.length) {
+        status.textContent = bi("no key needed", "无需密钥");
+        status.style.color = "#5fb236";
+      } else if (missing.length) {
+        status.textContent = `${bi("missing: ", "未填写：")}${missing
+          .map((field) => textOf(field.label))
+          .join(bi(", ", "、"))}`;
+        status.style.color = "#d64d4d";
+      } else {
+        status.textContent = bi("✓ filled in", "✓ 已填写");
+        status.style.color = "#5fb236";
+      }
+    };
+    keysBox.append(
+      el(
+        doc,
+        "div",
+        { class: "prism-row", style: { flexWrap: "wrap" } },
+        el(doc, "b", {
+          text: fields.length
+            ? bi(`${engine.label} credentials`, `${engine.label} · 密钥配置`)
+            : engine.label,
         }),
-      );
-      return;
-    }
-    const all = getJSONPref<Record<string, Record<string, string>>>(
-      "refract.engineKeys",
-      {},
+        status,
+      ),
     );
-    for (const field of engine.needsKey) {
-      const row = el(doc, "div", { class: "prism-row" });
-      row.append(
-        el(doc, "label", { text: fieldLabel(field), style: { width: "120px" } }),
-        el(doc, "input", {
-          class: "prism-search",
-          attrs: { type: "text", value: all[id]?.[field] || "" },
-          style: { flex: "1" },
+
+    if (engine.help) {
+      let text = textOf(engine.help.text);
+      if (id === "llm") {
+        text += ` ${bi("Current model:", "当前模型：")} ${getPref<string>("lens.model", "") || "—"}`;
+      }
+      const help = el(doc, "div", { class: "prism-stat-label", text });
+      const url = engine.help.url;
+      if (url) {
+        help.append(
+          " ",
+          el(doc, "a", {
+            text: bi("Where to get it ↗", "获取方式 ↗"),
+            attrs: { href: url },
+            style: "cursor:pointer;text-decoration:underline",
+            on: {
+              click: (event: Event) => {
+                event.preventDefault();
+                Zotero.launchURL(url);
+              },
+            },
+          }),
+        );
+      }
+      keysBox.append(help);
+    }
+
+    const stored = engineKeys(id);
+    for (const field of fields) {
+      const input = el(doc, "input", {
+        class: "prism-search",
+        attrs: {
+          type: field.secret ? "password" : "text",
+          placeholder: textOf(field.placeholder),
+          spellcheck: "false",
+          autocomplete: "off",
+        },
+        style: { flex: "1" },
+        on: {
+          input: (event: Event) => {
+            // Keys are pasted, and a pasted key often brings a space or a
+            // newline with it that the server then rejects.
+            saveKey(id, field.name, (event.target as HTMLInputElement).value.trim());
+            refreshStatus();
+          },
+        },
+      }) as HTMLInputElement;
+      input.value = stored[field.name] || "";
+      const row = el(
+        doc,
+        "div",
+        { class: "prism-row" },
+        el(doc, "label", {
+          text: textOf(field.label),
+          style: { width: "120px", flexShrink: "0" },
+        }),
+        input,
+      );
+      if (field.secret) {
+        const toggle = el(doc, "button", {
+          class: "prism-btn",
+          text: bi("Show", "显示"),
           on: {
-            change: (event: Event) => {
-              const value = (event.target as HTMLInputElement).value;
-              const next = { ...all, [id]: { ...(all[id] || {}), [field]: value } };
-              setJSONPref("refract.engineKeys", next);
+            click: () => {
+              const hidden = input.type === "password";
+              input.type = hidden ? "text" : "password";
+              toggle.textContent = hidden ? bi("Hide", "隐藏") : bi("Show", "显示");
             },
           },
-        }),
-      );
+        });
+        row.append(toggle);
+      }
       keysBox.append(row);
+      if (field.hint) {
+        keysBox.append(
+          el(doc, "div", {
+            class: "prism-stat-label",
+            text: textOf(field.hint),
+            style: { marginInlineStart: "126px" },
+          }),
+        );
+      }
     }
+
+    const result = el(doc, "span", { class: "prism-stat-label", style: { flex: "1" } });
+    const test = el(doc, "button", {
+      class: "prism-btn",
+      text: bi("Test engine", "测试引擎"),
+      on: {
+        click: async () => {
+          result.textContent = bi("testing…", "正在测试…");
+          result.style.color = "";
+          const started = Date.now();
+          try {
+            const out = await testEngine(id);
+            result.textContent = `✓ ${out} (${Date.now() - started} ms)`;
+            result.style.color = "#5fb236";
+          } catch (e) {
+            result.textContent = `✗ ${errorText(e)}`;
+            result.style.color = "#d64d4d";
+          }
+        },
+      },
+    });
+    keysBox.append(el(doc, "div", { class: "prism-row" }, test, result));
+    refreshStatus();
   };
   renderKeys();
   engineList?.addEventListener("command", () => win.setTimeout(renderKeys, 60));
