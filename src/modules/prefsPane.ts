@@ -579,129 +579,106 @@ function wireTranslate(win: Window, doc: Document, $: Getter) {
     else delete keys[name];
     setJSONPref("refract.engineKeys", { ...all, [id]: keys });
   };
+  /* The rows are built the way preferences.xhtml builds its own — an hbox, a
+     120px html:label, a native html:input — and inserted beside them rather
+     than into a wrapper, so they pick up exactly the pane's styling: the same
+     input boxes as the AI tab, and the same built-in 👁 on a password field.
+     The first version used the add-on's own panel classes and a bordered card,
+     and next to the native rows it looked like a different program. */
+  let keyRows: Element[] = [];
+  const add = (node: Element) => {
+    keysBox?.before(node);
+    keyRows.push(node);
+    return node;
+  };
+  const row = (label: string, ...children: Array<Node | string | null>) => {
+    const box = doc.createXULElement("hbox");
+    box.setAttribute("align", "center");
+    box.append(
+      el(doc, "label", { text: label, style: "width:120px" }),
+      ...children.filter((child): child is Node | string => child !== null),
+    );
+    return add(box);
+  };
+  /** A grey note under the input column. */
+  const note = (...children: Array<Node | string | null>) =>
+    row("", el(doc, "div", { class: "prism-stat-label", style: "flex:1" }, ...children));
+
   const renderKeys = () => {
     if (!keysBox) return;
-    clear(keysBox);
+    for (const node of keyRows) node.remove();
+    keyRows = [];
     const id = getPref<string>("refract.engine", "google");
     const engine = engineByID(id);
     const fields = engine.fields || [];
 
-    const status = el(doc, "span", { class: "prism-chip" });
-    const refreshStatus = () => {
+    /* Beside the Test button: what is still missing, until a test result
+       replaces it; editing a field puts the status back, since an earlier
+       result no longer says anything about the new key. */
+    const result = el(doc, "span", {
+      class: "prism-stat-label",
+      style: "margin-inline-start:8px",
+    });
+    const showStatus = () => {
       const missing = missingKeys(id);
-      if (!fields.length) {
-        status.textContent = bi("no key needed", "无需密钥");
-        status.style.color = "#5fb236";
-      } else if (missing.length) {
-        status.textContent = `${bi("missing: ", "未填写：")}${missing
-          .map((field) => textOf(field.label))
-          .join(bi(", ", "、"))}`;
-        status.style.color = "#d64d4d";
-      } else {
-        status.textContent = bi("✓ filled in", "✓ 已填写");
-        status.style.color = "#5fb236";
-      }
+      result.textContent = missing.length
+        ? `${bi("Missing: ", "未填写：")}${missing
+            .map((field) => textOf(field.label))
+            .join(bi(", ", "、"))}`
+        : "";
+      result.style.color = missing.length ? "#d64d4d" : "";
     };
-    keysBox.append(
-      el(
-        doc,
-        "div",
-        { class: "prism-row", style: { flexWrap: "wrap" } },
-        el(doc, "b", {
-          text: fields.length
-            ? bi(`${engine.label} credentials`, `${engine.label} · 密钥配置`)
-            : engine.label,
-        }),
-        status,
-      ),
-    );
-
-    if (engine.help) {
-      let text = textOf(engine.help.text);
-      if (id === "llm") {
-        text += ` ${bi("Current model:", "当前模型：")} ${getPref<string>("lens.model", "") || "—"}`;
-      }
-      const help = el(doc, "div", { class: "prism-stat-label", text });
-      const url = engine.help.url;
-      if (url) {
-        help.append(
-          " ",
-          el(doc, "a", {
-            text: bi("Where to get it ↗", "获取方式 ↗"),
-            attrs: { href: url },
-            style: "cursor:pointer;text-decoration:underline",
-            on: {
-              click: (event: Event) => {
-                event.preventDefault();
-                Zotero.launchURL(url);
-              },
-            },
-          }),
-        );
-      }
-      keysBox.append(help);
-    }
 
     const stored = engineKeys(id);
     for (const field of fields) {
       const input = el(doc, "input", {
-        class: "prism-search",
         attrs: {
           type: field.secret ? "password" : "text",
           placeholder: textOf(field.placeholder),
           spellcheck: "false",
           autocomplete: "off",
         },
-        style: { flex: "1" },
+        style: "flex:1",
         on: {
           input: (event: Event) => {
             // Keys are pasted, and a pasted key often brings a space or a
             // newline with it that the server then rejects.
             saveKey(id, field.name, (event.target as HTMLInputElement).value.trim());
-            refreshStatus();
+            showStatus();
           },
         },
       }) as HTMLInputElement;
       input.value = stored[field.name] || "";
-      const row = el(
-        doc,
-        "div",
-        { class: "prism-row" },
-        el(doc, "label", {
-          text: textOf(field.label),
-          style: { width: "120px", flexShrink: "0" },
-        }),
-        input,
-      );
-      if (field.secret) {
-        const toggle = el(doc, "button", {
-          class: "prism-btn",
-          text: bi("Show", "显示"),
-          on: {
-            click: () => {
-              const hidden = input.type === "password";
-              input.type = hidden ? "text" : "password";
-              toggle.textContent = hidden ? bi("Hide", "隐藏") : bi("Show", "显示");
-            },
-          },
-        });
-        row.append(toggle);
-      }
-      keysBox.append(row);
-      if (field.hint) {
-        keysBox.append(
-          el(doc, "div", {
-            class: "prism-stat-label",
-            text: textOf(field.hint),
-            style: { marginInlineStart: "126px" },
-          }),
-        );
-      }
+      row(textOf(field.label), input);
+      if (field.hint) note(textOf(field.hint));
     }
 
-    const result = el(doc, "span", { class: "prism-stat-label", style: { flex: "1" } });
+    if (engine.help) {
+      let text = textOf(engine.help.text);
+      if (id === "llm") {
+        text += ` ${bi("Current model:", "当前模型：")}${getPref<string>("lens.model", "") || "—"}`;
+      }
+      const url = engine.help.url;
+      note(
+        text,
+        url
+          ? el(doc, "a", {
+              text: ` ${bi("Where to get it ↗", "获取方式 ↗")}`,
+              attrs: { href: url },
+              style: "cursor:pointer;white-space:nowrap",
+              on: {
+                click: (event: Event) => {
+                  event.preventDefault();
+                  Zotero.launchURL(url);
+                },
+              },
+            })
+          : null,
+      );
+    }
+
     const test = el(doc, "button", {
-      class: "prism-btn",
+      class: "prism-btn prism-btn-primary",
       text: bi("Test engine", "测试引擎"),
       on: {
         click: async () => {
@@ -719,8 +696,11 @@ function wireTranslate(win: Window, doc: Document, $: Getter) {
         },
       },
     });
-    keysBox.append(el(doc, "div", { class: "prism-row" }, test, result));
-    refreshStatus();
+    const actions = doc.createXULElement("hbox");
+    actions.setAttribute("align", "center");
+    actions.append(test, result);
+    add(actions);
+    showStatus();
   };
   renderKeys();
   engineList?.addEventListener("command", () => win.setTimeout(renderKeys, 60));

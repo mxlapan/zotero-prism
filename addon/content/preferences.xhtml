@@ -137,9 +137,9 @@
           <html:label style="margin-inline-start:16px" data-zh="源语言">Source</html:label>
           <menulist id="prism-source-lang" preference="refract.sourceLang" native="true"><menupopup /></menulist>
         </hbox>
-        <!-- the selected engine's credentials, filled in by prefsPane.ts -->
-        <html:div id="prism-engine-keys"
-          style="display:flex;flex-direction:column;gap:5px;margin:4px 0 8px;padding:8px 10px;border:1px solid var(--prism-border);border-radius:8px"></html:div>
+        <!-- the selected engine's credential rows are inserted before this
+             marker by prefsPane.ts, as siblings of the rows around it -->
+        <html:div id="prism-engine-keys" hidden="true"></html:div>
         <hbox align="center">
           <html:label style="width:120px" data-zh="对照笔记粒度">Bilingual note unit</html:label>
           <menulist id="prism-alignment" preference="refract.alignment" native="true"><menupopup /></menulist>
