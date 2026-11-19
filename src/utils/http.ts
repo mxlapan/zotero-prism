@@ -91,7 +91,8 @@ export function bodyDetail(body: string): string {
  */
 export function classifyHTTP(status: number, body: string): FailureKind {
   const text = `${bodyDetail(body)} ${body.slice(0, 600)}`;
-  if (/insufficient.?(quota|balance|credit|fund)|余额|欠费|quota.?exceeded|billing|credit balance|payment required|arrear/i.test(text) || status === 402) {
+  if (/insufficient.?(quota|balance|credit|fund)|余额|欠费|quota.?exceeded|billing|credit balance|payment required|arrear/i.test(text) || status === 402 || status === 456) {
+    // 456 is DeepL's "quota exceeded" — the monthly character allowance is used up.
     return "quota";
   }
   if (/context.?(length|window)|maximum context|too many tokens|prompt is too long|input is too long|exceeds?.{0,20}(limit|length)|上下文|过长/i.test(text)) {

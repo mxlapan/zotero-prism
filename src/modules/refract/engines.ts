@@ -85,6 +85,18 @@ function langFor(engine: string, code: string): string {
   return table[engine]?.[lower] ?? code;
 }
 
+/**
+ * DeepL's target language. Plain "ZH" is Simplified, so a Traditional Chinese
+ * target came back in Simplified; the script has to be named. (As a *source*
+ * DeepL takes only "ZH", which is why this is separate from `langFor`.)
+ */
+export function deeplTarget(code: string): string {
+  const lower = code.toLowerCase();
+  if (lower === "zh-tw") return "ZH-HANT";
+  if (lower === "zh-cn") return "ZH-HANS";
+  return langFor("deepl", code);
+}
+
 async function md5(text: string): Promise<string> {
   // WebCrypto has no MD5, and signing with the wrong digest would fail server
   // side with a confusing error, so this reports the real problem instead.
@@ -163,12 +175,17 @@ export const ENGINES: Engine[] = [
         ? "https://api-free.deepl.com"
         : "https://api.deepl.com";
       const params = new URLSearchParams();
-      params.set("auth_key", key);
-      params.set("target_lang", langFor("deepl", ctx.to));
+      params.set("target_lang", deeplTarget(ctx.to));
       if (ctx.from !== "auto") params.set("source_lang", langFor("deepl", ctx.from));
       for (const text of texts) params.append("text", text);
       const { text: body } = await request("POST", `${host}/v2/translate`, {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          // DeepL stopped accepting `auth_key` in the body on 15 January 2026:
+          // every request sent that way gets a 403, however good the key, while
+          // other plugins using this header went on working with the same key.
+          Authorization: `DeepL-Auth-Key ${key}`,
+        },
         body: params.toString(),
         timeout: 40000,
       });

@@ -1,4 +1,5 @@
 import { classifyHTTP, explainRequestFailure, HTTPError, NetworkError } from "../src/utils/http";
+import { engineByID, deeplTarget } from "../src/modules/refract/engines";
 
 const fails: string[] = [];
 const ok = (n: string, c: boolean, extra = "") => { if (!c) fails.push(n); console.log(`${c ? "PASS" : "FAIL"}  ${n} ${extra}`); };
@@ -30,5 +31,39 @@ ok("timeout", (timeout as NetworkError).kind === "timeout", timeout.message);
 const http = explainRequestFailure({ xmlhttp: { status: 401, responseText: `{"error":{"message":"bad key"}}` } }, "https://api.x.com/v1");
 ok("HTTP error keeps its status for the engines", http instanceof HTTPError && /HTTP 401/.test(http.message), http.message);
 
-console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
-process.exit(fails.length ? 1 : 0);
+is("DeepL quota used up", 456, `{"message":"Quota exceeded"}`, "quota");
+
+/* DeepL rejects a key sent as `auth_key` in the body since 15 January 2026; the
+   same key kept working in other plugins, which send it as a header. */
+(async () => {
+  const sent: any[] = [];
+  const zotero = (globalThis as any).Zotero;
+  const previous = zotero.HTTP;
+  zotero.HTTP = {
+    request: async (method: string, url: string, options: any) => {
+      sent.push({ method, url, ...options });
+      return { status: 200, responseText: `{"translations":[{"text":"结果见表 2。"}]}` };
+    },
+  };
+  try {
+    const out = await engineByID("deepl").translate(["The results are shown in Table 2."], {
+      from: "auto",
+      to: "zh-CN",
+      keys: { authKey: "abc-123:fx" },
+    });
+    const call = sent[0] || {};
+    ok("deepl: key goes in the Authorization header", call.headers?.Authorization === "DeepL-Auth-Key abc-123:fx", JSON.stringify(call.headers));
+    ok("deepl: key is not in the body", !String(call.body || "").includes("auth_key") && !String(call.body || "").includes("abc-123"), String(call.body));
+    ok("deepl: free key uses the free host", String(call.url).startsWith("https://api-free.deepl.com/"), call.url);
+    ok("deepl: translation read back", out[0] === "结果见表 2。", JSON.stringify(out));
+  } catch (e) {
+    ok("deepl: request can be built", false, String(e));
+  } finally {
+    zotero.HTTP = previous;
+  }
+  ok("deepl: Traditional Chinese is named", deeplTarget("zh-TW") === "ZH-HANT");
+  ok("deepl: Simplified Chinese is named", deeplTarget("zh-CN") === "ZH-HANS");
+
+  console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
+  process.exit(fails.length ? 1 : 0);
+})();
