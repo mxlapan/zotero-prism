@@ -62,7 +62,8 @@ const OVERLAY_CSS = `
   pointer-events: auto;
   overflow: hidden;
   box-sizing: border-box;
-  color: #101114;
+  /* Set per layer from the reader's theme — see pageColors(). */
+  color: var(--prism-tr-fg, #101114);
   background: var(--prism-tr-bg, #ffffff);
   cursor: text;
   transition: opacity .12s ease;
@@ -479,6 +480,11 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
   const layer = doc.createElement("div");
   layer.className = "prism-tr-layer";
   layer.dataset.original = overlay.showOriginal ? "1" : "0";
+  const colors = pageColors(doc);
+  if (colors) {
+    layer.style.setProperty("--prism-tr-bg", colors.background);
+    layer.style.setProperty("--prism-tr-fg", colors.foreground);
+  }
 
   const scale = pageView.viewport.scale || 1;
   const fontScale = Number(getPref("refract.fontSize", 15)) / 15;
@@ -539,6 +545,47 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
 
 const PAD_X = 1.5;
 const PAD_Y = 2;
+
+const COLOR = /^(#[0-9a-f]{3,8}|(rgba?|hsla?)\([\d\s.,%deg/]+\))$/i;
+
+/**
+ * The colours the reader is painting the page in.
+ *
+ * Zotero's reader themes (Dark, Black, Sepia, Snow, or the user's own) are not a
+ * CSS filter over the page: PDF.js redraws the canvas with white mapped to the
+ * theme's background and black to its foreground, and publishes the pair as
+ * `window.theme` in the viewer frame. The blocks were always white with black
+ * text, so under the Dark theme every translated paragraph was a white slab on
+ * a slate page. Read on every repaint: a theme change resets the page views,
+ * and the `pagerendered` that follows brings us back here.
+ */
+function pageColors(doc: Document): { background: string; foreground: string } | null {
+  const win: any = unwrap(doc.defaultView);
+  try {
+    const background = String(win?.theme?.background || "").trim();
+    const foreground = String(win?.theme?.foreground || "").trim();
+    if (COLOR.test(background) && COLOR.test(foreground)) return { background, foreground };
+  } catch {
+    /* no theme on this build */
+  }
+  // Without a theme object the page colour is still on the root as a variable;
+  // pick the text colour that reads on it.
+  try {
+    const background = win
+      .getComputedStyle(doc.documentElement)
+      .getPropertyValue("--background-color")
+      .trim();
+    if (!COLOR.test(background)) return null;
+    const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(background)?.[1];
+    if (!hex) return { background, foreground: "#101114" };
+    const full = hex.length === 3 ? [...hex].map((c) => c + c).join("") : hex;
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+    const dark = 0.299 * r + 0.587 * g + 0.114 * b < 140;
+    return { background, foreground: dark ? "#e8e9eb" : "#101114" };
+  } catch {
+    return null;
+  }
+}
 
 interface Rect {
   left: number;
