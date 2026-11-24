@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用说明
+    url: https://github.com/mxlapan/zotero-prism#功能
+    about: 各项功能的用法、快捷键与设置说明，遇到疑问可以先在这里查一查

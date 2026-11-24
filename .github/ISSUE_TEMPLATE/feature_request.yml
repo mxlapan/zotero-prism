@@ -1,0 +1,55 @@
+name: 功能建议
+description: 想要新功能，或希望改进现有功能
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先说清楚你在什么场景下遇到了不便，再说希望怎么做。把场景讲清楚，常常能找到比最初设想更合适的做法。
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 涉及的功能
+      options:
+        - 全文翻译（阅读器内）
+        - 划词翻译 / 双语对照笔记 / 标题摘要翻译
+        - AI 浮窗 / 阅读器侧边栏 / 划词问答
+        - AI 笔记 / AI 标注 / 语义检索
+        - 网页联动（浏览器扩展）
+        - 文库可视化（自定义列 / 关系图谱 / 标注管理）
+        - 阅读管理（阅读节律 / 标注复习 / 新文追踪等）
+        - 安装 / 更新 / 设置
+        - 新功能 / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 你在做什么事情时，哪里不方便。
+      placeholder: 例：每次重新打开 PDF 都要再点一次全文翻译，还要等它把整篇文章重新解析一遍。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望怎么做
+      description: 描述你期望的效果。有示意图或参考截图更好，直接拖进框里即可。
+      placeholder: 例：重新打开翻译过的 PDF 时，自动显示上次的译文。
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 目前的替代办法
+      description: 现在是怎么绕过去的，没有可以不填。
+
+  - type: textarea
+    id: reference
+    attributes:
+      label: 参考
+      description: 其他软件或插件里类似的功能、相关链接等，没有可以不填。
