@@ -62,6 +62,9 @@ const READER_CSS = `
   background:var(--material-sidepane,#fff); color:var(--fill-primary,#111);
   border:1px solid rgba(127,127,127,.35); border-radius:9px;
   box-shadow:0 10px 30px rgba(0,0,0,.25);
+  /* Opens just under the button, so its top edge overlaps the reader toolbar,
+     which is a window-drag region. */
+  -moz-window-dragging:no-drag;
 }
 .prism-menu div {
   padding:5px 9px; border-radius:6px; cursor:pointer; font-size:12.5px;

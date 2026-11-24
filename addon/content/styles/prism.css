@@ -47,6 +47,12 @@
   overflow: hidden;
   min-width: 300px;
   min-height: 220px;
+  /* The panel floats over the title bar, tab bar and reader toolbar, which
+     Zotero marks `-moz-window-dragging: drag`. Without opting out, the OS
+     treats a press there as a title-bar press: dragging the head moves the
+     whole window and a single click on ＋/⚙/✕ is swallowed (only the second
+     click of a double-click reaches the page). */
+  -moz-window-dragging: no-drag;
 }
 
 .prism-panel[hidden] {
