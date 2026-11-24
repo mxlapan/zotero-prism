@@ -702,7 +702,9 @@ function tipNode(doc: Document): HTMLElement {
     tip.className = "prism-tr-tip";
     tip.hidden = true;
     (doc.body || doc.documentElement).append(tip);
-    for (const event of ["scroll", "wheel", "mousedown", "keydown"]) {
+    // `pointerdown`, not `mousedown`: with a highlight, underline or ink tool
+    // active the page cancels pointerdown, and with it the mousedown.
+    for (const event of ["scroll", "wheel", "pointerdown", "keydown"]) {
       doc.addEventListener(event, () => hideTip(doc), true);
     }
   }

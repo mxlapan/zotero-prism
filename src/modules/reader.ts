@@ -321,25 +321,25 @@ function toolbarButton(reader: any, doc: Document): HTMLElement {
     button.textContent = "Prism";
     Zotero.debug("[Prism] reader toolbar: inline SVG did not parse, using text");
   }
-  // Three ways in, because the reader toolbar swallows pointer events to keep
-  // its own tool state: `click` alone needed a double press (the first one is
-  // spent moving focus out of the PDF frame) and `mousedown` alone never
-  // arrived at all. Whichever fires first wins; the debounce keeps one press
-  // from toggling twice.
-  let lastToggle = 0;
-  const toggle = (event: MouseEvent) => {
-    if (event.button) return; // left button only
-    const now = Date.now();
-    if (now - lastToggle < 300) return;
-    lastToggle = now;
-    event.stopPropagation();
-    Zotero.debug(`[Prism] toolbar button: ${event.type}`);
+  // The reader's focus manager cancels every `pointerdown` in this document so
+  // the page keeps the focus, and a cancelled pointerdown suppresses the mouse
+  // events that would follow it: `mousedown` and `mouseup` never arrive here.
+  // `pointerdown` always does, so the menu toggles on the press, the way
+  // Zotero's own toolbar buttons react. Letting it bubble on to that manager
+  // keeps the focus in the page and gives the button its pressed look.
+  // `click` still follows every press; it only acts when `detail` is 0, which
+  // is a keyboard activation (Enter or Space after reaching the button with
+  // the arrow keys), since that has no pointerdown before it.
+  const toggle = () => {
     if (menuIsOpen(doc)) closeToolbarMenu(doc);
     else openToolbarMenu(reader, doc, button);
   };
-  for (const type of ["pointerdown", "mousedown", "click"]) {
-    button.addEventListener(type, toggle as EventListener);
-  }
+  button.addEventListener("pointerdown", (event: PointerEvent) => {
+    if (event.button === 0) toggle();
+  });
+  button.addEventListener("click", (event: MouseEvent) => {
+    if (event.detail === 0) toggle();
+  });
   return button;
 }
 
@@ -556,6 +556,10 @@ function openMenu(
   menu.style.top = `${rect.bottom + 4}px`;
   Zotero.debug(`[Prism] toolbar menu: ${rows.length} rows`);
 
+  // Dismiss on `pointerdown`, not `mousedown`: in the reader's own document
+  // the focus manager cancels pointerdown on almost everything, which
+  // suppresses mousedown — so clicking another toolbar button or the sidebar
+  // left the menu open.
   const docs = clickTargets(reader, doc);
   const onDown = (event: Event) => {
     if (menu.contains(event.target as Node)) return;
@@ -569,12 +573,12 @@ function openMenu(
     dismissMenu = null;
     menu.remove();
     for (const target of docs) {
-      target.removeEventListener("mousedown", onDown, true);
+      target.removeEventListener("pointerdown", onDown, true);
       target.removeEventListener("keydown", onKey, true);
     }
   };
   for (const target of docs) {
-    target.addEventListener("mousedown", onDown, true);
+    target.addEventListener("pointerdown", onDown, true);
     target.addEventListener("keydown", onKey, true);
   }
   dismissMenu = close;
