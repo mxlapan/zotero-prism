@@ -22,6 +22,7 @@ import {
   toParagraphs,
   type Paragraph,
 } from "./layout";
+import { inkFrom, parseHex, type Ink, type RGB } from "./ink";
 import { escapeHTML, splitSentences } from "../../utils/text";
 import { pageText, pdfApp, pdfDocument, pdfReady, pageViews, unwrap } from "../../utils/reader";
 import { openProgress } from "../../utils/progress";
@@ -492,8 +493,11 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
   const fontFamily = getPref<string>("refract.fontFamily", "");
   const hover = getPref<boolean>("refract.hoverOriginal", true);
 
-  for (const block of blocks) {
-    const rect = viewportRect(pageView.viewport, block.box);
+  const rects = blocks.map((block) => viewportRect(pageView.viewport, block.box));
+  const inks = blockInks(pageView, blocks, rects, colors);
+
+  for (const [i, block] of blocks.entries()) {
+    const rect = rects[i];
     if (rect.width < 8 || rect.height < 5) continue;
 
     const node = doc.createElement("div");
@@ -505,6 +509,11 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
     node.style.top = `${rect.top - PAD_Y}px`;
     node.style.width = `${rect.width + PAD_X * 2}px`;
     node.style.height = `${rect.height + PAD_Y * 2}px`;
+    const ink = inks?.[i];
+    if (ink) {
+      node.style.setProperty("--prism-tr-bg", ink.background);
+      node.style.setProperty("--prism-tr-fg", ink.foreground);
+    }
     if (fontFamily) node.style.fontFamily = fontFamily;
     if (!hover) node.title = block.original;
 
@@ -583,6 +592,119 @@ function pageColors(doc: Document): { background: string; foreground: string } |
     const dark = 0.299 * r + 0.587 * g + 0.114 * b < 140;
     return { background, foreground: dark ? "#e8e9eb" : "#101114" };
   } catch {
+    return null;
+  }
+}
+
+/** PDF.js `RenderingStates.FINISHED`. */
+const RENDERING_FINISHED = 3;
+/** Longest side of the page copy the colours are read from, in pixels. */
+const SAMPLE_SIDE = 1000;
+/** Pixels read per block. */
+const SAMPLES_PER_BLOCK = 900;
+
+interface PageInks {
+  canvas: unknown;
+  theme: string;
+  blocks: Block[];
+  inks: Array<Ink | null>;
+}
+
+/** Keyed by page view: the primary and the compare pane each have their own. */
+const inkCache = new WeakMap<object, PageInks>();
+
+/**
+ * Paper and ink under each block, read off the page as it is painted.
+ *
+ * Every `pagerendered` repaints the layers of all pages, so the reading is
+ * kept per page view and only redone when that page has a new canvas, a new
+ * set of blocks or a new theme. A canvas still being drawn is not read: it is
+ * part blank, and its `pagerendered` brings us back once it is done. Until
+ * then the page keeps the colours it had, so a zoom does not flash the blocks
+ * back to the theme colour.
+ */
+function blockInks(
+  pageView: any,
+  blocks: Block[],
+  rects: Rect[],
+  theme: { background: string; foreground: string } | null,
+): Array<Ink | null> | null {
+  const themeKey = theme ? `${theme.background} ${theme.foreground}` : "";
+  const cached = inkCache.get(pageView);
+  const usable =
+    cached && cached.blocks === blocks && cached.theme === themeKey ? cached : null;
+  let canvas: any = null;
+  let finished = false;
+  try {
+    canvas = pageView.canvas;
+    finished = pageView.renderingState === RENDERING_FINISHED;
+  } catch {
+    /* torn down */
+  }
+  if (!canvas || !finished) return usable?.inks ?? null;
+  if (usable && usable.canvas === canvas) return usable.inks;
+  const inks = sampleInks(canvas, pageView.viewport, rects, parseHex(theme?.foreground));
+  if (!inks) return usable?.inks ?? null;
+  inkCache.set(pageView, { canvas, theme: themeKey, blocks, inks });
+  return inks;
+}
+
+/**
+ * Copy the page canvas down to about screen resolution and sample a grid of
+ * pixels under each block.
+ *
+ * The copy is drawn into a canvas of the main window: that side may read any
+ * page's pixels, and the numbers come back without crossing into the viewer's
+ * unprivileged compartment one by one. Nearest-pixel scaling keeps every
+ * sample a colour actually on the page rather than a blend of paper and ink.
+ */
+function sampleInks(
+  source: any,
+  viewport: any,
+  rects: Rect[],
+  preferred: RGB | null,
+): Array<Ink | null> | null {
+  try {
+    const width = Number(viewport?.width);
+    const height = Number(viewport?.height);
+    if (!(source.width > 0 && source.height > 0 && width > 0 && height > 0)) {
+      return null;
+    }
+    const factor = Math.min(1, SAMPLE_SIDE / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * factor));
+    const h = Math.max(1, Math.round(height * factor));
+    const host = (Zotero.getMainWindow() as any)?.document;
+    if (!host) return null;
+    const copy = host.createElementNS("http://www.w3.org/1999/xhtml", "canvas") as HTMLCanvasElement;
+    copy.width = w;
+    copy.height = h;
+    const context = copy.getContext("2d");
+    if (!context) return null;
+    context.imageSmoothingEnabled = false;
+    context.drawImage(source, 0, 0, w, h);
+    const data = context.getImageData(0, 0, w, h).data;
+
+    return rects.map((rect) => {
+      const x0 = Math.max(0, Math.floor((rect.left - PAD_X) * factor));
+      const y0 = Math.max(0, Math.floor((rect.top - PAD_Y) * factor));
+      const x1 = Math.min(w, Math.ceil((rect.left + rect.width + PAD_X) * factor));
+      const y1 = Math.min(h, Math.ceil((rect.top + rect.height + PAD_Y) * factor));
+      if (x1 <= x0 || y1 <= y0) return null;
+      // The R2 low-discrepancy sequence spreads the samples evenly without a
+      // grid's regular spacing, which can fall in step with the line pitch
+      // and read only the gaps between lines, or only the text.
+      const n = Math.min(SAMPLES_PER_BLOCK, (x1 - x0) * (y1 - y0));
+      const samples: number[] = [];
+      for (let k = 0; k < n; k++) {
+        const x = x0 + Math.floor(((0.5 + k * 0.7548776662466927) % 1) * (x1 - x0));
+        const y = y0 + Math.floor(((0.5 + k * 0.5698402909980532) % 1) * (y1 - y0));
+        const i = (y * w + x) * 4;
+        samples.push(data[i], data[i + 1], data[i + 2]);
+      }
+      return inkFrom(samples, preferred);
+    });
+  } catch (e) {
+    Zotero.debug(`[Prism] could not read the page colours: ${e}`);
     return null;
   }
 }

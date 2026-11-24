@@ -643,6 +643,7 @@ import { readFileSync } from "node:fs";
 import { extractDelta, stopReason } from "../src/modules/lens/provider";
 import { replyLanguage } from "../src/modules/lens/prompts";
 import { linkifyPages } from "../src/modules/lens/apps";
+import { inkFrom, parseHex, contrast, type RGB } from "../src/modules/refract/ink";
 
 const t1 = splitTemplate("Question: ${P.question}\n\n${await P.fullText()}");
 ok("splitTemplate finds both expressions", t1.expressions.length === 2, JSON.stringify(t1.expressions));
@@ -865,6 +866,56 @@ const paged = withPageMarkers(["Intro.", "Body text.", "Results.\n\nReferences\n
 ok("full text carries page markers", paged.includes("--- p. 2 ---\nBody text."), JSON.stringify(paged));
 ok("page markers survive dropping the references", dropReferences(paged).includes("--- p. 3 ---") && !dropReferences(paged).includes("[1] Someone"));
 ok("a page range keeps its own numbering", withPageMarkers(["x", "y"], 4).startsWith("--- p. 4 ---\nx"));
+
+/* ---- refract: paper and ink under a translated block ---- */
+{
+  // A block's worth of samples: `inkShare` of them ink, the rest paper, with
+  // per-channel noise like a scan's. Deterministic, so a failure reproduces.
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const area = (paper: RGB, ink: RGB, inkShare: number, noise = 0, n = 900) => {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const base = rand() < inkShare ? ink : paper;
+      for (const c of base) out.push(Math.max(0, Math.min(255, Math.round(c + (rand() - 0.5) * 2 * noise))));
+    }
+    return out;
+  };
+  const near = (hex: string, rgb: RGB, tolerance = 12) => {
+    const got = parseHex(hex);
+    return !!got && got.every((c, i) => Math.abs(c - rgb[i]) <= tolerance);
+  };
+
+  const white = inkFrom(area([255, 255, 255], [0, 0, 0], 0.2));
+  ok("plain page: white paper, black ink", !!white && near(white.background, [255, 255, 255], 2) && near(white.foreground, [0, 0, 0], 2), JSON.stringify(white));
+
+  const scan = inkFrom(area([236, 224, 196], [52, 44, 38], 0.18, 10));
+  ok("yellowed scan: the paper's cream, not white", !!scan && near(scan.background, [236, 224, 196], 6), JSON.stringify(scan));
+  ok("yellowed scan: the scan's own dark ink", !!scan && near(scan.foreground, [52, 44, 38], 8), JSON.stringify(scan));
+
+  const dark = inkFrom(area([44, 52, 64], [222, 226, 230], 0.15));
+  ok("dark theme page: dark paper, light ink", !!dark && near(dark.background, [44, 52, 64], 2) && near(dark.foreground, [222, 226, 230], 2), JSON.stringify(dark));
+
+  const box = inkFrom(area([226, 236, 247], [20, 30, 60], 0.12, 3));
+  ok("tinted abstract box keeps its tint", !!box && near(box.background, [226, 236, 247], 4), JSON.stringify(box));
+
+  const band = inkFrom(area([30, 70, 140], [255, 255, 255], 0.2));
+  ok("white heading on a blue band stays white on blue", !!band && near(band.background, [30, 70, 140], 2) && near(band.foreground, [255, 255, 255], 2), JSON.stringify(band));
+
+  const photo: number[] = [];
+  for (let i = 0; i < 900; i++) photo.push(Math.floor(rand() * 256), Math.floor(rand() * 256), Math.floor(rand() * 256));
+  ok("no dominant colour (a figure) is left to the theme", inkFrom(photo) === null);
+
+  const faint = inkFrom(area([255, 255, 255], [200, 200, 200], 0.2));
+  ok("ink too faint to read falls back to near-black", !!faint && contrast(parseHex(faint.foreground)!, [255, 255, 255]) >= 4.5, JSON.stringify(faint));
+  const themed = inkFrom(area([255, 255, 255], [200, 200, 200], 0.2), [40, 20, 90]);
+  ok("…or to the theme's ink when that reads", !!themed && themed.foreground === "#28145a", JSON.stringify(themed));
+
+  const blank = inkFrom(area([250, 248, 240], [0, 0, 0], 0));
+  ok("an empty patch of paper still gets a readable ink", !!blank && near(blank.background, [250, 248, 240], 2) && contrast(parseHex(blank.foreground)!, [250, 248, 240]) >= 4.5, JSON.stringify(blank));
+
+  ok("too few samples to judge", inkFrom([255, 255, 255, 0, 0, 0]) === null);
+}
 
 console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");
 process.exit(fails.length ? 1 : 0);
