@@ -1,5 +1,5 @@
 import { classifyHTTP, explainRequestFailure, HTTPError, NetworkError } from "../src/utils/http";
-import { engineByID, deeplTarget } from "../src/modules/refract/engines";
+import { engineByID, deeplTarget, ENGINES, translateBatch } from "../src/modules/refract/engines";
 
 const fails: string[] = [];
 const ok = (n: string, c: boolean, extra = "") => { if (!c) fails.push(n); console.log(`${c ? "PASS" : "FAIL"}  ${n} ${extra}`); };
@@ -61,6 +61,51 @@ is("DeepL quota used up", 456, `{"message":"Quota exceeded"}`, "quota");
   } finally {
     zotero.HTTP = previous;
   }
+  /* GitHub #3: with the chosen engine out of reach, every paragraph came from
+     the fallback, was cached under the fallback, and was translated over the
+     network again on every run because only the chosen engine's cache was read. */
+  {
+    const g = globalThis as any;
+    g.addon.data.refract = { cache: new Map() };
+    const getMainWindow = g.Zotero.getMainWindow;
+    g.Zotero.getMainWindow = () => null;
+    const calls = { dead: 0, live: 0 };
+    const dead = {
+      id: "test-dead",
+      label: "Dead",
+      batch: 1,
+      translate: async () => {
+        calls.dead++;
+        throw Object.assign(new Error("connection refused"), { kind: "unreachable" });
+      },
+    };
+    const live = {
+      id: "test-live",
+      label: "Live",
+      batch: 1,
+      translate: async (texts: string[]) => {
+        calls.live += texts.length;
+        return texts.map((text) => `译：${text}`);
+      },
+    };
+    const engines = ENGINES.splice(0, ENGINES.length, dead as any, live as any);
+    try {
+      const first = await translateBatch(["alpha", "beta"], { engine: "test-dead", to: "zh-CN" });
+      ok("fallback translates when the chosen engine is unreachable", first.join("|") === "译：alpha|译：beta", JSON.stringify(first));
+      const network = { ...calls };
+      const second = await translateBatch(["alpha", "beta"], { engine: "test-dead", to: "zh-CN" });
+      ok("the second run is answered from the fallback's cache", second.join("|") === "译：alpha|译：beta" && calls.live === network.live, `${JSON.stringify(second)} live calls ${network.live} -> ${calls.live}`);
+      ok("an unreachable engine is not asked again straight away", calls.dead === network.dead, `dead calls ${network.dead} -> ${calls.dead}`);
+      const third = await translateBatch(["alpha", "gamma"], { engine: "test-dead", to: "zh-CN" });
+      ok("only the new paragraph goes over the network", third.join("|") === "译：alpha|译：gamma" && calls.live === network.live + 1, `${JSON.stringify(third)} live calls ${calls.live}`);
+    } catch (e) {
+      ok("fallback cache scenario runs", false, String(e));
+    } finally {
+      ENGINES.splice(0, ENGINES.length, ...engines);
+      g.Zotero.getMainWindow = getMainWindow;
+    }
+  }
+
   ok("deepl: Traditional Chinese is named", deeplTarget("zh-TW") === "ZH-HANT");
   ok("deepl: Simplified Chinese is named", deeplTarget("zh-CN") === "ZH-HANS");
 

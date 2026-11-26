@@ -580,6 +580,7 @@ export async function testEngine(id: string): Promise<string> {
   if (!out?.trim()) {
     throw new Error(bi("The engine answered with nothing.", "引擎返回了空结果。"));
   }
+  benched.delete(id);
   return out.trim();
 }
 
@@ -628,10 +629,7 @@ export async function translateBatch(
   const results: string[] = new Array(texts.length).fill("");
   let pending: Entry[] = [];
   texts.forEach((text, index) => {
-    if (!text.trim()) return;
-    const cached = readCache(engineID, to, text);
-    if (cached !== undefined) results[index] = cached;
-    else pending.push({ index, text });
+    if (text.trim()) pending.push({ index, text });
   });
 
   const total = texts.length;
@@ -641,11 +639,23 @@ export async function translateBatch(
     options.onProgress?.(done, total);
   };
 
+  const fallback = getPref<boolean>("refract.engineFallback", true);
   let failure: unknown;
   /** The last error any engine hit, fatal or not, for the message below. */
   const seen: { error?: unknown } = {};
   try {
-    pending = await runEngine(engineID, { from, to }, pending, results, report, options, seen);
+    pending = await runEngine(engineID, { from, to }, pending, results, report, {
+      ...options,
+      // An engine that just proved unreachable is not asked again for a while:
+      // each attempt cost up to a 20-second timeout per paragraph before the
+      // fallback took over. Its cached translations are still used.
+      cacheOnly: fallback && isBenched(engineID),
+    }, seen);
+    if (pending.length && fallback && isBenched(engineID)) {
+      failure = seen.error ?? new Error(
+        bi(`${engine.label} is unreachable at the moment.`, `${engine.label}暂时无法连接。`),
+      );
+    }
   } catch (e) {
     failure = e;
   }
@@ -654,7 +664,7 @@ export async function translateBatch(
      take the whole document with it — a 429 from a public endpoint halfway
      through left the rest of the pages blank — so the leftovers are offered to
      the other engines that can run without asking the user for anything. */
-  if ((pending.length || failure) && getPref<boolean>("refract.engineFallback", true)) {
+  if ((pending.length || failure) && fallback) {
     for (const nextID of fallbackOrder(engineID)) {
       if (!pending.length) break;
       if (options.shouldStop?.()) break;
@@ -691,6 +701,22 @@ interface Entry {
   text: string;
 }
 
+/** Engines that could not be reached, and until when they are left alone. */
+const benched = new Map<string, number>();
+const BENCH_MS = 10 * 60 * 1000;
+
+function bench(engineID: string) {
+  benched.set(engineID, Date.now() + BENCH_MS);
+}
+
+function isBenched(engineID: string): boolean {
+  const until = benched.get(engineID);
+  if (until === undefined) return false;
+  if (Date.now() < until) return true;
+  benched.delete(engineID);
+  return false;
+}
+
 /**
  * Run one engine over the outstanding entries; return whatever it could not do.
  *
@@ -707,10 +733,28 @@ async function runEngine(
   options: {
     onProgress?: (done: number, total: number) => void;
     shouldStop?: () => boolean;
+    /** Answer from this engine's cache only; leave the rest outstanding. */
+    cacheOnly?: boolean;
   },
   seen: { error?: unknown } = {},
 ): Promise<Entry[]> {
   if (!entries.length) return entries;
+
+  // The cache is keyed by the engine that produced each translation, so it is
+  // read here, once per engine tried. Read only for the chosen engine, it
+  // missed everything a fallback engine had translated: with Google out of
+  // reach, every paragraph came from the fallback, was cached under it, and
+  // was translated over the network again on every run.
+  const outstanding: Entry[] = [];
+  for (const entry of entries) {
+    const cached = readCache(engineID, lang.to, entry.text);
+    if (cached !== undefined) results[entry.index] = cached;
+    else outstanding.push(entry);
+  }
+  if (outstanding.length < entries.length) report(entries.length - outstanding.length);
+  entries = outstanding;
+  if (!entries.length || options.cacheOnly) return entries;
+
   const engine = engineByID(engineID);
   const ctx: EngineContext = { ...lang, keys: engineKeys(engineID) };
 
@@ -723,6 +767,7 @@ async function runEngine(
   const failed: Entry[] = [];
   let cursor = 0;
   let fatal: unknown;
+  let timeouts = 0;
 
   const worker = async () => {
     while (cursor < groups.length) {
@@ -747,13 +792,18 @@ async function runEngine(
         seen.error = e;
         failed.push(...group);
         // A bad key, an empty account or a wrong address fails every batch the
-        // same way, so the rest go straight to the next engine.
+        // same way, so the rest go straight to the next engine. So does a
+        // second timeout: one can be a slow reply, two means the host is out
+        // of reach, and every further paragraph would wait out its own.
         const kind = (e as any)?.kind;
+        if (kind === "timeout") timeouts++;
         if (
           ["auth", "quota", "address", "model", "unreachable", "certificate"].includes(kind) ||
+          (kind === "timeout" && timeouts >= 2) ||
           /40[13]|unauthor|invalid/i.test(errorText(e))
         ) {
           fatal = e;
+          if (["unreachable", "certificate", "timeout"].includes(kind)) bench(engineID);
         }
       }
       report(group.length);
