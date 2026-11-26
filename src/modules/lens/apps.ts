@@ -403,6 +403,11 @@ export async function createAnnotation(
     comment?: string;
     color?: string;
     rects?: number[][];
+    /** the selection's rects on the following page, when it runs over */
+    nextPageRects?: number[][];
+    /** the reader's own sort key for a selection, when there is one */
+    sortIndex?: string;
+    pageLabel?: string;
     offset?: number;
     tags?: string[];
   },
@@ -421,13 +426,17 @@ export async function createAnnotation(
   annotation.annotationPosition = JSON.stringify({
     pageIndex: options.pageIndex,
     rects,
+    ...(hasRects && options.nextPageRects?.length ? { nextPageRects: options.nextPageRects } : {}),
   });
+  if (options.pageLabel) annotation.annotationPageLabel = options.pageLabel;
   const top = Math.round(2000 - (rects[0]?.[3] ?? 0));
-  annotation.annotationSortIndex = [
-    String(options.pageIndex).padStart(5, "0"),
-    String(options.offset ?? 0).padStart(6, "0"),
-    String(Math.max(0, top)).padStart(5, "0"),
-  ].join("|");
+  annotation.annotationSortIndex =
+    options.sortIndex ||
+    [
+      String(options.pageIndex).padStart(5, "0"),
+      String(options.offset ?? 0).padStart(6, "0"),
+      String(Math.max(0, top)).padStart(5, "0"),
+    ].join("|");
   for (const tag of options.tags || ["prism"]) annotation.addTag(tag, 1);
   await annotation.saveTx();
   return annotation;

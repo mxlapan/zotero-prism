@@ -32,6 +32,8 @@ export interface Turn {
   promptID?: string;
   ms?: number;
   error?: boolean;
+  /** the user rewrote the answer */
+  edited?: boolean;
   ts: number;
 }
 

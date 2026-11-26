@@ -247,6 +247,40 @@
   background: var(--prism-bg-soft);
   border: 1px solid var(--prism-border);
   overflow-wrap: anywhere;
+  /* The panel and the reader sidebar sit in Zotero's XUL window, where text
+     is not selectable unless something says so. */
+  user-select: text;
+  cursor: text;
+}
+
+.prism-turn-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prism-turn-editor textarea {
+  min-height: 140px;
+  resize: vertical;
+  font: inherit;
+  font-size: 0.95em;
+  line-height: 1.55;
+  padding: 7px 9px;
+  border: 1px solid var(--prism-accent);
+  border-radius: var(--prism-radius);
+  background: var(--prism-bg);
+  color: var(--prism-fg);
+}
+
+.prism-turn-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.prism-edited-mark {
+  color: var(--prism-fg-soft);
+  font-style: italic;
 }
 
 .prism-turn-assistant.prism-error .prism-bubble {

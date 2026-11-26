@@ -410,6 +410,8 @@ const INTERNAL = new Set([
   "beam.watchlist",
   "lens.bridgeTimeout",
   "lens.panelFontSize",
+  "lens.popupHeight",
+  "lens.popupWidth",
   "lens.profiles",
   "lens.prompts",
   "lens.readerBindMode",

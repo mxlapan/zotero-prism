@@ -7,7 +7,7 @@ import { config } from "../../package.json";
 import { attachReaderShortcuts } from "./keys";
 import { bi } from "../utils/locale";
 import { el, injectStyle } from "../utils/dom";
-import { getPref } from "../utils/prefs";
+import { getPref, setPref } from "../utils/prefs";
 import { renderMarkdown } from "../lib/markdown";
 import { promptsFor, renderPrompt, type PromptDef } from "./lens/prompts";
 import { chat } from "./lens/provider";
@@ -51,16 +51,22 @@ const PRISM_MARK = `<svg xmlns="${SVG_NS}" viewBox="0 0 16 16" width="20" height
 
 const READER_CSS = `
 .prism-pop { display:flex; flex-wrap:wrap; gap:4px; padding:4px 0 2px; max-width:330px; }
-.prism-pop button {
+.prism-pop button, .prism-pop-actions button {
   border:1px solid rgba(127,127,127,.35); background:transparent; color:inherit;
   border-radius:6px; padding:2px 8px; font-size:12px; cursor:pointer;
 }
-.prism-pop button:hover { background:rgba(46,127,212,.16); }
+.prism-pop button:hover, .prism-pop-actions button:hover { background:rgba(46,127,212,.16); }
+.prism-pop-actions button:disabled { opacity:.5; cursor:default; }
 .prism-pop-out {
-  margin-top:5px; max-width:330px; max-height:250px; overflow:auto;
+  box-sizing:border-box; margin-top:5px; overflow:auto;
+  min-width:180px; min-height:48px; max-width:90vw;
   font-size:12.5px; line-height:1.55; border-top:1px solid rgba(127,127,127,.25);
-  padding-top:5px; white-space:pre-wrap;
+  padding:5px 2px 2px; white-space:pre-wrap;
+  user-select:text; cursor:text; outline:none;
+  /* Drag the corner to resize; the size is kept for next time. */
+  resize:both;
 }
+.prism-pop-actions { display:flex; gap:4px; justify-content:flex-end; padding-top:6px; }
 .prism-pop-out p { margin:.3em 0; }
 .prism-menu {
   position:absolute; z-index:2147483000; min-width:210px; padding:4px;
@@ -155,14 +161,111 @@ function onSelectionPopup(event: any) {
   const text: string = params?.annotation?.text || "";
   if (!text.trim()) return;
   injectStyle(doc, "prism-reader-css", READER_CSS);
+  const selection = plain(params?.annotation);
 
   const container = el(doc, "div", { class: "prism-pop-wrap" });
   const row = el(doc, "div", { class: "prism-pop" });
-  const output = el(doc, "div", { class: "prism-pop-out", style: { display: "none" } });
+  // Editable, which is also what makes it selectable: the reader cancels the
+  // press that would start a selection anywhere but in inputs and editable
+  // text. What is saved or copied is what the box holds, edits included.
+  const output = el(doc, "div", {
+    class: "prism-pop-out",
+    style: { display: "none" },
+    attrs: { contenteditable: "true", spellcheck: "false" },
+  });
+  const width = Number(getPref("lens.popupWidth", 380)) || 380;
+  const height = Number(getPref("lens.popupHeight", 0)) || 0;
+  output.style.width = `${width}px`;
+  if (height) {
+    output.style.height = `${height}px`;
+    output.style.maxHeight = "80vh";
+  } else {
+    output.style.maxHeight = "260px";
+  }
 
-  const show = (html: string) => {
+  const copy = el(doc, "button", { text: bi("Copy", "复制") }) as HTMLButtonElement;
+  const keep = el(doc, "button", { text: bi("Save as annotation", "存为批注") }) as HTMLButtonElement;
+  const actions = el(doc, "div", { class: "prism-pop-actions", style: { display: "none" } }, copy, keep);
+
+  /** The annotation this answer was saved as; saving again updates it. */
+  let saved: Zotero.Item | null = null;
+  const popup = () => container.closest(".selection-popup") as HTMLElement | null;
+  const show = (html: string, done = false) => {
     output.style.display = "block";
     output.innerHTML = html;
+    actions.style.display = done ? "flex" : "none";
+    // Zotero caps this popup at 198px, which left the answer a column of
+    // three or four words; the cap goes once there is an answer to read.
+    const box = popup();
+    if (box) {
+      box.style.maxWidth = "none";
+      keepInView(box);
+    }
+  };
+  const start = () => {
+    saved = null;
+    keep.disabled = false;
+    keep.textContent = bi("Save as annotation", "存为批注");
+  };
+  const save = async () => {
+    const comment = output.innerText.trim();
+    const attachment = getItem(reader.itemID);
+    if (!comment || !attachment) return;
+    keep.disabled = true;
+    try {
+      const existing = saved && (Zotero.Items.get(saved.id) as Zotero.Item | false);
+      if (existing && !existing.deleted) {
+        existing.annotationComment = comment;
+        await existing.saveTx();
+      } else {
+        saved = await createAnnotation(attachment, {
+          pageIndex: Number(selection?.position?.pageIndex ?? currentPage(reader)),
+          rects: selection?.position?.rects,
+          nextPageRects: selection?.position?.nextPageRects,
+          sortIndex: selection?.sortIndex,
+          pageLabel: selection?.pageLabel,
+          quote: text,
+          comment,
+          color: "#a28ae5",
+          tags: ["prism/answer"],
+        });
+      }
+      keep.textContent = bi("Saved · click to update", "已存为批注 · 再点更新");
+    } catch (e) {
+      keep.textContent = bi("Save as annotation", "存为批注");
+      showFailure(e, bi("Save as annotation", "存为批注"));
+    } finally {
+      keep.disabled = false;
+    }
+  };
+  keep.addEventListener("click", () => void save());
+  copy.addEventListener("click", () => {
+    new ztoolkit.Clipboard().addText(output.innerText.trim(), "text/plain").copy();
+    copy.textContent = bi("Copied", "已复制");
+    doc.defaultView?.setTimeout(() => {
+      copy.textContent = bi("Copy", "复制");
+    }, 1200);
+  });
+
+  // The size the box is dragged to is the size it opens at next time.
+  const remember = () => {
+    if (!output.isConnected) {
+      doc.removeEventListener("mouseup", remember, true);
+      return;
+    }
+    const w = Math.round(parseFloat(output.style.width) || 0);
+    const h = Math.round(parseFloat(output.style.height) || 0);
+    if (w && w !== width) setPref("lens.popupWidth", w);
+    if (h && h !== height) setPref("lens.popupHeight", h);
+    const box = popup();
+    if (box) keepInView(box);
+  };
+  doc.addEventListener("mouseup", remember, true);
+
+  const ask = async (prompt: PromptDef) => {
+    start();
+    const answer = await runPrompt(prompt, text, reader, show);
+    if (answer && getPref<boolean>("lens.annotationWriteBack", false)) await save();
   };
 
   if (refractOn()) row.append(
@@ -170,11 +273,10 @@ function onSelectionPopup(event: any) {
       text: bi("Translate", "翻译"),
       on: {
         click: async () => {
+          start();
           show(`<p>${bi("translating…", "正在翻译…")}</p>`);
           try {
-            show(
-              `<p>${escape(await translateText(text))}</p>`,
-            );
+            show(`<p>${escape(await translateText(text))}</p>`, true);
           } catch (e: any) {
             show(`<p style="color:#d64d4d">${escape(String(e?.message || e))}</p>`);
           }
@@ -188,9 +290,7 @@ function onSelectionPopup(event: any) {
     row.append(
       el(doc, "button", {
         text: prompt.name,
-        on: {
-          click: () => void runPrompt(prompt, text, reader, show),
-        },
+        on: { click: () => void ask(prompt) },
       }),
     );
   }
@@ -204,25 +304,50 @@ function onSelectionPopup(event: any) {
             bi("Ask about the selection:", "针对选中内容提问："),
           );
           if (!question) return;
-          void runPrompt(
-            {
-              id: "ad-hoc",
-              name: "ask",
-              scope: ["selection"],
-              context: "selection",
-              body: `Passage:\n\${P.selection}\n\nQuestion: ${question}`,
-            },
-            text,
-            reader,
-            show,
-          );
+          void ask({
+            id: "ad-hoc",
+            name: "ask",
+            scope: ["selection"],
+            context: "selection",
+            body: `Passage:\n\${P.selection}\n\nQuestion: ${question}`,
+          });
         },
       },
     }),
   );
 
-  container.append(row, output);
+  container.append(row, output, actions);
   append(container);
+}
+
+/** A plain copy of what the reader hands over, or null. */
+function plain(value: any): any {
+  try {
+    return value ? JSON.parse(JSON.stringify(value)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keep a popup that has grown inside the view. Zotero places it once, for
+ * the size it had then; an answer or a resize makes it larger afterwards.
+ */
+function keepInView(popup: HTMLElement) {
+  const area = popup.parentElement?.getBoundingClientRect();
+  if (!area) return;
+  const box = popup.getBoundingClientRect();
+  const pad = 8;
+  let dx = 0;
+  let dy = 0;
+  if (box.right > area.right - pad) dx = area.right - pad - box.right;
+  if (box.left + dx < area.left + pad) dx = area.left + pad - box.left;
+  if (box.bottom > area.bottom - pad) dy = area.bottom - pad - box.bottom;
+  if (box.top + dy < area.top + pad) dy = area.top + pad - box.top;
+  if (!dx && !dy) return;
+  const at = /translate\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px\s*\)/.exec(popup.style.transform || "");
+  if (!at) return;
+  popup.style.transform = `translate(${Number(at[1]) + dx}px, ${Number(at[2]) + dy}px)`;
 }
 
 function escape(text: string) {
@@ -232,12 +357,13 @@ function escape(text: string) {
     .replace(/>/g, "&gt;");
 }
 
+/** Stream an answer into the popup; resolves to it, or to null on failure. */
 async function runPrompt(
   prompt: PromptDef,
   selection: string,
   reader: any,
-  show: (html: string) => void,
-) {
+  show: (html: string, done?: boolean) => void,
+): Promise<string | null> {
   show(`<p>${bi("thinking…", "思考中…")}</p>`);
   try {
     const item = toRegularItem(getItem(reader.itemID));
@@ -249,21 +375,11 @@ async function runPrompt(
         show(renderMarkdown(whole));
       },
     });
-    show(renderMarkdown(answer));
-    if (getPref<boolean>("lens.annotationWriteBack", false)) {
-      const attachment = getItem(reader.itemID);
-      if (attachment) {
-        await createAnnotation(attachment, {
-          pageIndex: currentPage(reader),
-          quote: selection,
-          comment: answer.slice(0, 3000),
-          color: "#a28ae5",
-          tags: ["prism/answer"],
-        });
-      }
-    }
+    show(renderMarkdown(answer), true);
+    return answer;
   } catch (e: any) {
     show(`<p style="color:#d64d4d">${escape(String(e?.message || e))}</p>`);
+    return null;
   }
 }
 

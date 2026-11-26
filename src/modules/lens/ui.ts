@@ -1,7 +1,7 @@
 /** Shared chat rendering used by the floating panel and the reader sidebar. */
 
 import { config } from "../../../package.json";
-import { clear, el, injectStylesheet } from "../../utils/dom";
+import { clear, el, injectStylesheet, setHTML } from "../../utils/dom";
 import { renderMarkdown, markdownToNoteHTML } from "../../lib/markdown";
 import { getString, bi } from "../../utils/locale";
 import type { ChatSession, Turn } from "./chat";
@@ -126,6 +126,9 @@ function renderActions(
   const meta = el(doc, "div", { class: "prism-meta" });
   if (turn.model) meta.append(el(doc, "span", { text: turn.model }));
   if (turn.ms) meta.append(el(doc, "span", { text: `${(turn.ms / 1000).toFixed(1)}s` }));
+  if (turn.edited) {
+    meta.append(el(doc, "span", { class: "prism-edited-mark", text: bi("edited", "已编辑") }));
+  }
 
   const copy = el(doc, "button", { text: getString("panel-copy") });
   copy.addEventListener("click", () => {
@@ -146,6 +149,11 @@ function renderActions(
     }
     return meta;
   }
+
+  // What is saved, appended or asked about next is the edited answer.
+  const edit = el(doc, "button", { text: bi("Edit", "编辑") });
+  edit.addEventListener("click", () => editTurn(doc, turn, meta, handlers));
+  meta.append(edit);
 
   const note = el(doc, "button", { text: getString("panel-to-note") });
   note.addEventListener("click", async () => {
@@ -175,6 +183,65 @@ function renderActions(
     meta.append(retry);
   }
   return meta;
+}
+
+/**
+ * Swap an answer's bubble for a text box holding its Markdown. Saving replaces
+ * the answer in the conversation, so the note it is saved to, the text it is
+ * copied as and the context of the next question all use the edited version.
+ */
+function editTurn(doc: Document, turn: Turn, meta: HTMLElement, handlers: TurnHandlers) {
+  const wrapper = meta.parentElement;
+  const bubble = wrapper?.querySelector(".prism-bubble") as HTMLElement | null;
+  if (!wrapper || !bubble || wrapper.querySelector(".prism-turn-editor")) return;
+
+  const input = el(doc, "textarea", { attrs: { spellcheck: "false" } }) as HTMLTextAreaElement;
+  input.value = turn.content;
+  const editor = el(doc, "div", { class: "prism-turn-editor" }, input);
+  const done = (save: boolean) => {
+    const text = input.value.trim();
+    if (save && text && text !== turn.content) {
+      turn.content = text;
+      turn.edited = true;
+      setHTML(bubble, renderMarkdown(text));
+      meta.replaceWith(renderActions(doc, turn, handlers));
+    } else {
+      meta.style.display = "";
+    }
+    editor.remove();
+    bubble.style.display = "";
+  };
+  editor.append(
+    el(
+      doc,
+      "div",
+      { class: "prism-turn-editor-actions" },
+      el(doc, "button", { class: "prism-btn", text: bi("Cancel", "取消"), on: { click: () => done(false) } }),
+      el(doc, "button", {
+        class: "prism-btn prism-btn-primary",
+        text: bi("Save", "保存"),
+        on: { click: () => done(true) },
+      }),
+    ),
+  );
+  input.addEventListener("keydown", (event: KeyboardEvent) => {
+    // Esc would otherwise close the whole panel.
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      done(false);
+    } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      event.stopPropagation();
+      done(true);
+    }
+  });
+  input.style.height = `${Math.min(420, Math.max(140, bubble.scrollHeight + 24))}px`;
+  // `.prism-meta` is display: flex, which beats the `hidden` attribute.
+  bubble.style.display = "none";
+  meta.style.display = "none";
+  wrapper.insertBefore(editor, bubble);
+  input.focus();
 }
 
 /** Write an answer into a child note, keeping the prompt for provenance. */

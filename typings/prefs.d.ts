@@ -57,6 +57,8 @@ declare namespace _ZoteroTypes {
       "lens.panelFontSize": number;
       "lens.readerBindMode": string;
       "lens.annotationWriteBack": boolean;
+      "lens.popupWidth": number;
+      "lens.popupHeight": number;
       "lens.provenance": boolean;
       "refract.engine": string;
       "refract.targetLang": string;
