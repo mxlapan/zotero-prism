@@ -78,6 +78,7 @@ pref("refract.layoutService", "");
 pref("refract.layoutServiceType", "pdf2zh");
 pref("refract.layoutServiceKey", "");
 pref("refract.cacheEnabled", true);
+pref("refract.restoreTranslation", true);
 
 // ---------------------------------------------------------------- beam (new features)
 pref("beam.rhythmGoalMinutes", 45);

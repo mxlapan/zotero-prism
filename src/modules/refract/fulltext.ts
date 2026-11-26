@@ -3,7 +3,9 @@
  *
  * The translated paragraphs are laid back over the page at the position of the
  * original text, so the figures, equations and page numbering you already know
- * stay exactly where they were. Ctrl/Cmd-click any block to reveal the source.
+ * stay exactly where they were. Ctrl/Cmd-click any block to reveal the source,
+ * double-click it to correct the translation. A translation is saved with the
+ * attachment and comes back when the paper is opened again.
  */
 
 import { config } from "../../../package.json";
@@ -22,7 +24,16 @@ import {
   toParagraphs,
   type Paragraph,
 } from "./layout";
-import { inkFrom, parseHex, type Ink, type RGB } from "./ink";
+import { contrast, inkFrom, parseHex, type Ink, type RGB } from "./ink";
+import { locateQuote, mapToTranslation, runsOf, type Mark } from "./marks";
+import {
+  carryEdits,
+  forgetTranslation,
+  loadSaved,
+  saveTranslation,
+  type Block,
+} from "./saved";
+import { editTranslation, type Anchor } from "./editor";
 import { escapeHTML, splitSentences } from "../../utils/text";
 import { pageText, pdfApp, pdfDocument, pdfReady, pageViews, unwrap } from "../../utils/reader";
 import { openProgress } from "../../utils/progress";
@@ -32,16 +43,6 @@ import { sleep } from "../../utils/window";
 /** How far below the baseline a descender reaches, as a fraction of the size. */
 const DESCENDER = 0.26;
 
-interface Block {
-  box: [number, number, number, number];
-  /** the original line boxes, in PDF space, top line first */
-  lines: Array<[number, number, number, number]>;
-  original: string;
-  translated: string;
-  fontSize: number;
-  kind: Paragraph["kind"];
-}
-
 interface Overlay {
   readerID: string;
   itemID: number;
@@ -49,9 +50,22 @@ interface Overlay {
   showOriginal: boolean;
   listener?: (event: any) => void;
   cancelled: boolean;
+  /** recorded with the saved copy */
+  engine: string;
+  to: string;
+  fingerprint: string;
+  /** highlights and underlines carried onto the translation, per block */
+  marks?: Map<Block, Mark[]>;
+  /** which annotations `marks` was worked out from */
+  markSig?: string;
 }
 
 const OVERLAY_CSS = `
+/* Above Zotero's overlay (1) and the text layer (2). That overlay draws the
+   selection, highlights and search hits where the words are in the original;
+   over a translation those spots hold other words, or blank paper where the
+   translation ran short. The selection and the highlights are drawn again
+   on the translation instead — see paintSelection() and marksFor(). */
 .prism-tr-layer {
   position: absolute;
   inset: 0;
@@ -85,7 +99,7 @@ const OVERLAY_CSS = `
 }
 .prism-tr-block[data-kind="heading"] { font-weight: 650; }
 .prism-tr-layer[data-original="1"] .prism-tr-block { opacity: 0; pointer-events: none; }
-.prism-tr-block:hover { box-shadow: 0 0 0 1px rgba(46,127,212,.55); }
+.prism-tr-block.prism-tr-hot { box-shadow: 0 0 0 1px rgba(46,127,212,.55); }
 .prism-tr-block.prism-tr-peek { opacity: .12; }
 .prism-tr-tip {
   position: fixed;
@@ -102,6 +116,23 @@ const OVERLAY_CSS = `
   white-space: pre-wrap;
 }
 .prism-tr-tip[hidden] { display: none; }
+.prism-tr-tip-hint { margin-top: 6px; font-size: 11px; opacity: .6; }
+.prism-tr-hl { background: color-mix(in srgb, var(--hl) 45%, transparent); border-radius: 2px; }
+.prism-tr-ul {
+  text-decoration: underline 2px var(--ul);
+  text-underline-offset: 2px;
+  text-decoration-skip-ink: none;
+}
+/* Zotero's own selection colours, blended the way it blends them. */
+.prism-tr-sel {
+  position: absolute;
+  pointer-events: none;
+  background: #71ADFD;
+  opacity: .4;
+  mix-blend-mode: multiply;
+}
+.prism-tr-layer[data-dark="1"] .prism-tr-sel { opacity: .7; mix-blend-mode: lighten; }
+.prism-tr-layer[data-original="1"] .prism-tr-sel { display: none; }
 `;
 
 function app(reader: any): any {
@@ -226,8 +257,13 @@ export async function translateReader(
     pages: new Map(),
     showOriginal: false,
     cancelled: false,
+    engine: options.engine || getPref<string>("refract.engine", "google"),
+    to: options.to || getPref<string>("refract.targetLang", "zh-CN"),
+    fingerprint: fingerprintOf(viewer),
   };
   addon.data.refract.overlays.set(reader._instanceID, overlay);
+  const attachment = attachmentOf(reader);
+  const previous = attachment ? await loadSaved(attachment) : null;
 
   const progress = new ztoolkit.ProgressWindow(config.addonName, {
     closeOnClick: false,
@@ -356,7 +392,9 @@ export async function translateReader(
     });
 
     for (const blocks of overlay.pages.values()) separate(blocks);
+    carryEdits(overlay.pages, previous);
     attach(reader, overlay);
+    void persist(reader, overlay);
     progress.changeLine({
       text: incomplete
         ? bi(
@@ -416,11 +454,13 @@ function attach(reader: any, overlay: Overlay) {
   const doc = viewerDoc(reader);
   if (!doc) return;
   injectCSS(doc);
+  wire(reader, doc);
 
   const paint = () => {
     for (const pageView of pageViews(reader)) {
       renderPage(pageView, overlay, doc);
     }
+    paintSelection(reader);
   };
   paint();
 
@@ -486,12 +526,14 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
     layer.style.setProperty("--prism-tr-bg", colors.background);
     layer.style.setProperty("--prism-tr-fg", colors.foreground);
   }
+  const paper = parseHex(colors?.background);
+  layer.dataset.dark = paper && contrast(paper, [255, 255, 255]) > contrast(paper, [0, 0, 0]) ? "1" : "0";
+  const marks = marksFor(overlay);
 
   const scale = pageView.viewport.scale || 1;
   const fontScale = Number(getPref("refract.fontSize", 15)) / 15;
   const lineHeight = Number(getPref("refract.lineHeight", 1.5));
   const fontFamily = getPref<string>("refract.fontFamily", "");
-  const hover = getPref<boolean>("refract.hoverOriginal", true);
 
   const rects = blocks.map((block) => viewportRect(pageView.viewport, block.box));
   const inks = blockInks(pageView, blocks, rects, colors);
@@ -503,6 +545,8 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
     const node = doc.createElement("div");
     node.className = "prism-tr-block";
     node.dataset.kind = block.kind;
+    node.dataset.page = String(index);
+    node.dataset.index = String(i);
     // Cover a shade more than the text box: ascenders and descenders of the
     // original poke out of an exact fit and read as dirt on the page.
     node.style.left = `${rect.left - PAD_X}px`;
@@ -515,7 +559,6 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
       node.style.setProperty("--prism-tr-fg", ink.foreground);
     }
     if (fontFamily) node.style.fontFamily = fontFamily;
-    if (!hover) node.title = block.original;
 
     const base = Math.max(6, block.fontSize * scale * 0.96 * fontScale);
     const lineRects = block.lines
@@ -524,23 +567,17 @@ function renderPage(pageView: any, overlay: Overlay, doc: Document) {
       .sort((a, b) => a.top - b.top);
 
     if (lineRects.length) {
-      paintLines(doc, node, block, lineRects, rect, base);
+      paintLines(doc, node, block, lineRects, rect, base, marks.get(block));
     } else {
       // No line geometry (shouldn't happen) — fall back to wrapped text.
       const flow = doc.createElement("div");
       flow.className = "prism-tr-flow";
-      flow.textContent = block.translated;
+      fillRuns(doc, flow, block.translated, 0, marks.get(block));
       flow.style.fontSize = `${base}px`;
       flow.style.lineHeight = String(lineHeight);
       node.append(flow);
     }
 
-    node.addEventListener("click", (event: MouseEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return;
-      event.preventDefault();
-      node.classList.toggle("prism-tr-peek");
-    });
-    if (hover) attachTip(node, block.original, doc);
     layer.append(node);
   }
   host.append(layer);
@@ -732,6 +769,7 @@ function paintLines(
   lineRects: Rect[],
   box: Rect,
   base: number,
+  marks?: Mark[],
 ) {
   let size = base;
   let flowed = flowIntoLines(
@@ -754,12 +792,21 @@ function paintLines(
   }
 
   node.dataset.size = String(size);
+  // Where each line starts in the translation, for the marks.
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of flowed.lines) {
+    const at = block.translated.indexOf(line, cursor);
+    const start = at >= 0 ? at : cursor;
+    offsets.push(start);
+    cursor = start + line.length;
+  }
   lineRects.forEach((line, i) => {
     const text = flowed.lines[i];
     if (!text) return;
     const el = doc.createElement("div");
     el.className = "prism-tr-line";
-    el.textContent = text;
+    fillRuns(doc, el, text, offsets[i], marks);
     el.style.left = `${line.left - box.left + PAD_X}px`;
     el.style.top = `${line.top - box.top + PAD_Y}px`;
     el.style.width = `${line.width}px`;
@@ -776,6 +823,33 @@ function paintLines(
     }
     node.append(el);
   });
+}
+
+/** A line's text, with the runs under a highlight or an underline wrapped. */
+function fillRuns(doc: Document, el: HTMLElement, text: string, offset: number, marks?: Mark[]) {
+  if (!marks?.length) {
+    el.textContent = text;
+    return;
+  }
+  for (const run of runsOf(text, offset, marks)) {
+    if (!run.marks.length) {
+      el.append(doc.createTextNode(run.text));
+      continue;
+    }
+    const span = doc.createElement("span");
+    span.textContent = run.text;
+    const highlight = run.marks.find((mark) => mark.kind === "highlight");
+    const underline = run.marks.find((mark) => mark.kind === "underline");
+    if (highlight) {
+      span.classList.add("prism-tr-hl");
+      span.style.setProperty("--hl", highlight.color);
+    }
+    if (underline) {
+      span.classList.add("prism-tr-ul");
+      span.style.setProperty("--ul", underline.color);
+    }
+    el.append(span);
+  }
 }
 
 /** Shrink a block whose lines came out wider than the estimate expected. */
@@ -838,15 +912,553 @@ function hideTip(doc: Document | null) {
   if (tip) (tip as HTMLElement).hidden = true;
 }
 
-function attachTip(node: HTMLElement, original: string, doc: Document) {
-  node.addEventListener("mouseenter", (event: MouseEvent) => {
-    const tip = tipNode(doc);
-    tip.textContent = original;
-    tip.style.left = `${Math.min(event.clientX + 12, (doc.defaultView?.innerWidth || 800) - 480)}px`;
-    tip.style.top = `${event.clientY + 16}px`;
-    tip.hidden = false;
+function showTip(doc: Document, block: Block, x: number, y: number) {
+  const tip = tipNode(doc);
+  const text = doc.createElement("div");
+  text.textContent = block.original;
+  const hint = doc.createElement("div");
+  hint.className = "prism-tr-tip-hint";
+  hint.textContent =
+    block.machine !== undefined
+      ? bi("Edited by hand · double-click to edit again", "已手动修改 · 双击可再次编辑")
+      : bi("Double-click to edit · Ctrl+click to see the original", "双击编辑译文 · Ctrl+点击透视原文");
+  tip.replaceChildren(text, hint);
+  tip.style.left = `${Math.min(x + 12, (doc.defaultView?.innerWidth || 800) - 480)}px`;
+  tip.style.top = `${y + 16}px`;
+  tip.hidden = false;
+}
+
+/* ------------------------------------------------ pointer, copy and editing */
+
+/**
+ * Marks a viewer document as wired by this instance of the plugin. After an
+ * upgrade the old instance's listeners are dead, and a new token wires the
+ * document again instead of finding it already done.
+ */
+const WIRED = Math.random().toString(36).slice(2);
+
+interface BlockRef {
+  page: number;
+  index: number;
+}
+
+/** The last right-click on a block, per reader, for the context menu. */
+const lastContext = new Map<string, BlockRef & { at: number }>();
+
+/**
+ * The translated block at a point.
+ *
+ * The layer sits under the PDF text layer so that Zotero's selection and
+ * highlights show over it, which means a block is never the target of a
+ * pointer event. `elementsFromPoint` sees through to it.
+ */
+function blockAt(doc: Document, x: number, y: number): (BlockRef & { node: HTMLElement }) | null {
+  let stack: Element[] = [];
+  try {
+    stack = Array.from(doc.elementsFromPoint(x, y) as ArrayLike<Element>);
+  } catch {
+    return null;
+  }
+  for (const element of stack) {
+    const node = (element as HTMLElement).closest?.(".prism-tr-block") as HTMLElement | null;
+    if (!node) continue;
+    const page = Number(node.dataset.page);
+    const index = Number(node.dataset.index);
+    if (Number.isInteger(page) && Number.isInteger(index)) return { page, index, node };
+  }
+  return null;
+}
+
+function blockOf(reader: any, ref: BlockRef): Block | undefined {
+  return overlayFor(reader)?.pages.get(ref.page)?.[ref.index];
+}
+
+/** Hover tip, Ctrl-click peek, double-click edit, right-click and copy. */
+function wire(reader: any, doc: Document) {
+  const root = doc.documentElement as HTMLElement | null;
+  const win = doc.defaultView;
+  if (!root || !win || root.dataset.prismTr === WIRED) return;
+  root.dataset.prismTr = WIRED;
+
+  const shown = () => {
+    const overlay = overlayFor(reader);
+    return overlay && !overlay.showOriginal ? overlay : null;
+  };
+
+  let hot: HTMLElement | null = null;
+  let frame = 0;
+  let x = 0;
+  let y = 0;
+  const hover = () => {
+    frame = 0;
+    const hit = shown() ? blockAt(doc, x, y) : null;
+    const node = hit?.node ?? null;
+    if (node === hot) return;
+    hot?.classList.remove("prism-tr-hot");
+    hot = node;
+    hot?.classList.add("prism-tr-hot");
+    const block = hit && blockOf(reader, hit);
+    if (block && getPref<boolean>("refract.hoverOriginal", true)) showTip(doc, block, x, y);
+    else hideTip(doc);
+  };
+  // Zotero keeps the selection itself; it is read back after every gesture
+  // that can change it, and on every move while the button is down.
+  let selecting = 0;
+  const refreshSelection = () => {
+    if (!selecting) {
+      selecting = win.requestAnimationFrame(() => {
+        selecting = 0;
+        paintSelection(reader);
+      });
+    }
+  };
+  doc.addEventListener(
+    "mousemove",
+    (event: MouseEvent) => {
+      x = event.clientX;
+      y = event.clientY;
+      if (!frame) frame = win.requestAnimationFrame(hover);
+      if (event.buttons & 1) refreshSelection();
+    },
+    true,
+  );
+  for (const type of ["pointerup", "mouseup", "click", "dblclick", "keyup"]) {
+    doc.addEventListener(type, () => win.setTimeout(refreshSelection, 0), true);
+  }
+
+  doc.addEventListener(
+    "click",
+    (event: MouseEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || !shown()) return;
+      const hit = blockAt(doc, event.clientX, event.clientY);
+      if (!hit) return;
+      event.preventDefault();
+      hit.node.classList.toggle("prism-tr-peek");
+    },
+    true,
+  );
+
+  doc.addEventListener(
+    "dblclick",
+    (event: MouseEvent) => {
+      if (!shown()) return;
+      const hit = blockAt(doc, event.clientX, event.clientY);
+      if (!hit) return;
+      event.preventDefault();
+      hideTip(doc);
+      editBlock(reader, hit);
+    },
+    true,
+  );
+
+  // Recorded before Zotero builds the menu, which then asks contextBlock().
+  doc.addEventListener(
+    "contextmenu",
+    (event: MouseEvent) => {
+      const hit = shown() ? blockAt(doc, event.clientX, event.clientY) : null;
+      if (hit) lastContext.set(reader._instanceID, { page: hit.page, index: hit.index, at: Date.now() });
+      else lastContext.delete(reader._instanceID);
+    },
+    true,
+  );
+
+  // On the window and after the viewer's own handler, which stops the event
+  // there once it has put the original text on the clipboard.
+  win.addEventListener("copy", (event: ClipboardEvent) => copyTranslation(reader, event), true);
+}
+
+/** Zotero's text selection: rects in PDF space, per page. */
+function selectionRanges(reader: any): Array<{ page: number; rects: number[][] }> {
+  const out: Array<{ page: number; rects: number[][] }> = [];
+  try {
+    for (const range of Array.from(reader._internalReader?._primaryView?._selectionRanges || []) as any[]) {
+      const position = range?.position;
+      if (!position || range.collapsed) continue;
+      const rects = (Array.from(position.rects || []) as ArrayLike<number>[]).map((rect) =>
+        Array.from(rect, Number),
+      );
+      if (rects.length) out.push({ page: Number(position.pageIndex), rects });
+    }
+  } catch {
+    /* no selection to read on this build */
+  }
+  return out;
+}
+
+/** A block node's box on its page, from the style it was placed with. */
+function boxOf(node: HTMLElement): Rect {
+  return {
+    left: parseFloat(node.style.left) || 0,
+    top: parseFloat(node.style.top) || 0,
+    width: parseFloat(node.style.width) || 0,
+    height: parseFloat(node.style.height) || 0,
+  };
+}
+
+function intersect(a: Rect, b: Rect): Rect | null {
+  const left = Math.max(a.left, b.left);
+  const top = Math.max(a.top, b.top);
+  const right = Math.min(a.left + a.width, b.left + b.width);
+  const bottom = Math.min(a.top + a.height, b.top + b.height);
+  return right - left > 0.5 && bottom - top > 0.5
+    ? { left, top, width: right - left, height: bottom - top }
+    : null;
+}
+
+/** Translated blocks touched by the selection, with the selection's boxes on that page. */
+function selectedBlocks(reader: any): Array<{ node: HTMLElement; boxes: Rect[]; pageView: any }> {
+  const views = pageViews(reader);
+  const out: Array<{ node: HTMLElement; boxes: Rect[]; pageView: any }> = [];
+  for (const { page, rects } of selectionRanges(reader)) {
+    const pageView = views[page];
+    const layer = pageView?.div?.querySelector(":scope > .prism-tr-layer") as HTMLElement | null;
+    if (!layer || !pageView.viewport) continue;
+    const boxes = rects.map((rect) => viewportRect(pageView.viewport, rect));
+    for (const node of Array.from(layer.querySelectorAll(".prism-tr-block")) as HTMLElement[]) {
+      const box = boxOf(node);
+      if (boxes.some((selected) => intersect(selected, box))) out.push({ node, boxes, pageView });
+    }
+  }
+  return out;
+}
+
+/**
+ * Draw Zotero's selection on the translation. Its overlay stays under the
+ * translated blocks with the rest of its marks, so where a block covers the
+ * page the selection is drawn again here, clipped to the block.
+ */
+function paintSelection(reader: any) {
+  const overlay = overlayFor(reader);
+  const doc = viewerDoc(reader);
+  if (!overlay || !doc) return;
+  for (const old of Array.from(doc.querySelectorAll(".prism-tr-sel")) as Element[]) old.remove();
+  if (overlay.showOriginal) return;
+  for (const { node, boxes } of selectedBlocks(reader)) {
+    const box = boxOf(node);
+    for (const selected of boxes) {
+      const hit = intersect(selected, box);
+      if (!hit) continue;
+      const mark = doc.createElement("div");
+      mark.className = "prism-tr-sel";
+      mark.style.left = `${hit.left}px`;
+      mark.style.top = `${hit.top}px`;
+      mark.style.width = `${hit.width}px`;
+      mark.style.height = `${hit.height}px`;
+      node.parentElement?.append(mark);
+    }
+  }
+}
+
+/**
+ * Copying a selection over translated paragraphs gives the translation, as
+ * it is on screen: the characters that lie inside the selection. Zotero
+ * selects in the original, by position, and the translation sits on the same
+ * lines, so the selection's boxes pick out the translated text under them.
+ */
+function copyTranslation(reader: any, event: ClipboardEvent) {
+  const overlay = overlayFor(reader);
+  if (!overlay || overlay.showOriginal || !event.clipboardData) return;
+  const touched = selectedBlocks(reader);
+  if (!touched.length) return;
+  const parts: string[] = [];
+  for (const { node, boxes, pageView } of touched) {
+    const text = textInside(node, boxes, pageView);
+    if (text) parts.push(text);
+  }
+  // Measuring came to nothing: whole paragraphs beat an empty clipboard.
+  const text = parts.length
+    ? parts.join("\n")
+    : touched
+        .map(({ node }) => blockOf(reader, { page: Number(node.dataset.page), index: Number(node.dataset.index) })?.translated || "")
+        .filter(Boolean)
+        .join("\n");
+  if (!text) return;
+  event.clipboardData.clearData();
+  event.clipboardData.setData("text/plain", text);
+  event.preventDefault();
+}
+
+/** The characters of a block whose centres fall inside one of `boxes`. */
+function textInside(node: HTMLElement, boxes: Rect[], pageView: any): string {
+  const doc = node.ownerDocument;
+  const page = (pageView.div as HTMLElement).getBoundingClientRect();
+  const scale = page.width / (Number(pageView.viewport?.width) || page.width) || 1;
+  const range = doc.createRange();
+  let out = "";
+  for (const line of Array.from(node.querySelectorAll(".prism-tr-line, .prism-tr-flow")) as HTMLElement[]) {
+    let piece = "";
+    const walker = doc.createTreeWalker(line, 4 /* NodeFilter.SHOW_TEXT */);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      const data = text.nodeValue || "";
+      for (let i = 0; i < data.length; i++) {
+        range.setStart(text, i);
+        range.setEnd(text, i + 1);
+        const r = range.getBoundingClientRect();
+        if (!r.width && !r.height) continue;
+        const cx = (r.left + r.width / 2 - page.left) / scale;
+        const cy = (r.top + r.height / 2 - page.top) / scale;
+        if (boxes.some((b) => cx >= b.left && cx <= b.left + b.width && cy >= b.top && cy <= b.top + b.height)) {
+          piece += data[i];
+        }
+      }
+    }
+    if (!piece) continue;
+    // Lines of a Latin translation were broken at spaces that are not there.
+    out += /[A-Za-z0-9]$/.test(out) && /^[A-Za-z0-9]/.test(piece) ? ` ${piece}` : piece;
+  }
+  return out;
+}
+
+function overlaps(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+  const width =
+    Math.min(Math.max(a[0], a[2]), Math.max(b[0], b[2])) -
+    Math.max(Math.min(a[0], a[2]), Math.min(b[0], b[2]));
+  const height =
+    Math.min(Math.max(a[1], a[3]), Math.max(b[1], b[3])) -
+    Math.max(Math.min(a[1], a[3]), Math.min(b[1], b[3]));
+  return width > 0.5 && height > 0.5;
+}
+
+/** The block right-clicked a moment ago, for the view context menu. */
+export function contextBlock(reader: any): BlockRef | null {
+  const hit = lastContext.get(reader?._instanceID);
+  if (!hit || Date.now() - hit.at > 3000 || !blockOf(reader, hit)) return null;
+  return { page: hit.page, index: hit.index };
+}
+
+export function copyBlock(reader: any, ref: BlockRef) {
+  const block = blockOf(reader, ref);
+  if (block) new ztoolkit.Clipboard().addText(block.translated, "text/plain").copy();
+}
+
+/** How many paragraphs carry hand edits, to warn before throwing them away. */
+export function editedCount(reader: any): number {
+  let count = 0;
+  for (const blocks of overlayFor(reader)?.pages.values() || []) {
+    for (const block of blocks) if (block.machine !== undefined) count++;
+  }
+  return count;
+}
+
+export function editBlock(reader: any, ref: BlockRef) {
+  const block = blockOf(reader, ref);
+  if (!block) return;
+  const host = hostWindow(reader);
+  if (!host) return;
+  const node = viewerDoc(reader)?.querySelector(
+    `.prism-tr-block[data-page="${ref.page}"][data-index="${ref.index}"]`,
+  ) as HTMLElement | null;
+  editTranslation({
+    win: host,
+    anchor: node ? anchorIn(host, node) : null,
+    original: block.original,
+    translated: block.translated,
+    machine: block.machine,
+    onSave: (text) => applyEdit(reader, ref, text),
   });
-  node.addEventListener("mouseleave", () => hideTip(doc));
+}
+
+function applyEdit(reader: any, ref: BlockRef, text: string) {
+  const overlay = overlayFor(reader);
+  const block = blockOf(reader, ref);
+  if (!overlay || !block) return;
+  const machine = block.machine ?? block.translated;
+  if (text === machine) {
+    block.translated = machine;
+    delete block.machine;
+  } else {
+    block.machine = machine;
+    block.translated = text;
+  }
+  overlay.marks = undefined;
+  restyleReader(reader);
+  void persist(reader, overlay);
+}
+
+/** The window holding the reader: the main window, or a reader window of its own. */
+function hostWindow(reader: any): Window | null {
+  return (reader?._window as Window | undefined) || (Zotero.getMainWindow() as unknown as Window) || null;
+}
+
+/** Where a node in the PDF frame sits, in the coordinates of `host`. */
+function anchorIn(host: Window, node: HTMLElement): Anchor | null {
+  try {
+    const rect = node.getBoundingClientRect();
+    const frame: any = node.ownerDocument.defaultView;
+    const dx = Number(frame.mozInnerScreenX) - Number((host as any).mozInnerScreenX);
+    const dy = Number(frame.mozInnerScreenY) - Number((host as any).mozInnerScreenY);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null;
+    return { left: rect.left + dx, top: rect.top + dy, width: rect.width, height: rect.height };
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------ annotations on the translation */
+
+function annotationsOf(itemID: number): Zotero.Item[] {
+  try {
+    const attachment = Zotero.Items.get(itemID) as Zotero.Item | false;
+    if (!attachment || !attachment.isFileAttachment()) return [];
+    return (attachment.getAnnotations() as Zotero.Item[]).filter((annotation) =>
+      ["highlight", "underline"].includes(String(annotation.annotationType)),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function signature(annotations: Zotero.Item[]): string {
+  return annotations
+    .map((a) => `${a.key}:${a.dateModified}`)
+    .sort()
+    .join(",");
+}
+
+/**
+ * The reader's highlights and underlines, each moved onto the sentences of
+ * the translation that render the words it marks — see marks.ts.
+ */
+function marksFor(overlay: Overlay): Map<Block, Mark[]> {
+  if (overlay.marks) return overlay.marks;
+  const marks = new Map<Block, Mark[]>();
+  const annotations = annotationsOf(overlay.itemID);
+  overlay.markSig = signature(annotations);
+  for (const annotation of annotations) {
+    let position: any;
+    try {
+      position = JSON.parse(annotation.annotationPosition);
+    } catch {
+      continue;
+    }
+    const spans: Array<[number, number[][]]> = [[Number(position?.pageIndex), position?.rects || []]];
+    if (position?.nextPageRects) spans.push([Number(position.pageIndex) + 1, position.nextPageRects]);
+    for (const [page, rects] of spans) {
+      for (const block of overlay.pages.get(page) || []) {
+        if (!block.lines.some((line) => rects.some((rect) => overlaps(line, rect)))) continue;
+        const source = locateQuote(block.original, annotation.annotationText || "");
+        const target = source && mapToTranslation(block.original, block.translated, source);
+        if (!target) continue;
+        const list = marks.get(block) || [];
+        list.push({
+          start: target[0],
+          end: target[1],
+          color: annotation.annotationColor || "#ffd400",
+          kind: annotation.annotationType === "underline" ? "underline" : "highlight",
+        });
+        marks.set(block, list);
+      }
+    }
+  }
+  overlay.marks = marks;
+  return marks;
+}
+
+/**
+ * An annotation was added, changed or removed somewhere: repaint any open
+ * translation whose paper's highlights are no longer the ones it drew.
+ */
+export function annotationsChanged() {
+  for (const reader of ((Zotero.Reader as any)._readers || []) as any[]) {
+    const overlay = overlayFor(reader);
+    if (!overlay) continue;
+    if (signature(annotationsOf(overlay.itemID)) === overlay.markSig) continue;
+    overlay.marks = undefined;
+    restyleReader(reader);
+  }
+}
+
+/* ------------------------------------------------------------ saved copies */
+
+function attachmentOf(reader: any): Zotero.Item | null {
+  try {
+    const item = Zotero.Items.get(reader?.itemID) as Zotero.Item | false;
+    return item && item.isAttachment() ? item : null;
+  } catch {
+    return null;
+  }
+}
+
+function fingerprintOf(viewer: any): string {
+  try {
+    const document = viewer?.pdfDocument;
+    const value = document?.fingerprints?.[0] ?? document?.fingerprint;
+    return value ? String(value) : "";
+  } catch {
+    return "";
+  }
+}
+
+async function persist(reader: any, overlay: Overlay) {
+  const attachment = attachmentOf(reader);
+  if (!attachment || overlay.cancelled) return;
+  await saveTranslation(attachment, {
+    version: 1,
+    fingerprint: overlay.fingerprint,
+    engine: overlay.engine,
+    to: overlay.to,
+    savedAt: Date.now(),
+    pages: [...overlay.pages.entries()],
+  });
+}
+
+const restoring = new Set<string>();
+
+/**
+ * Put a saved translation back on a reader that has just opened: no layout
+ * parsing, no engine, so it is there as soon as the pages are. Skipped when
+ * the file has changed since it was translated, since the saved boxes would
+ * no longer sit on the text.
+ */
+export async function restoreReader(reader: any) {
+  if (!getPref<boolean>("refract.restoreTranslation", true)) return;
+  const id: string | undefined = reader?._instanceID;
+  if (!id || overlayFor(reader) || restoring.has(id)) return;
+  const attachment = attachmentOf(reader);
+  if (!attachment) return;
+  restoring.add(id);
+  try {
+    const saved = await loadSaved(attachment);
+    if (!saved?.pages.length) return;
+    const viewer = await viewerFor(reader);
+    if (!viewer?.pdfDocument || overlayFor(reader)) return;
+    const fingerprint = fingerprintOf(viewer);
+    if (saved.fingerprint && fingerprint && saved.fingerprint !== fingerprint) {
+      Zotero.debug(`[Prism] ${attachment.key} changed since it was translated; not restoring`);
+      return;
+    }
+    const overlay: Overlay = {
+      readerID: id,
+      itemID: reader.itemID,
+      pages: new Map(saved.pages),
+      showOriginal: false,
+      cancelled: false,
+      engine: saved.engine,
+      to: saved.to,
+      fingerprint: saved.fingerprint || fingerprint,
+    };
+    addon.data.refract.overlays.set(id, overlay);
+    attach(reader, overlay);
+    Zotero.debug(`[Prism] restored the saved translation of ${attachment.key}`);
+  } catch (e) {
+    Zotero.debug(`[Prism] could not restore the translation: ${e}`);
+  } finally {
+    restoring.delete(id);
+  }
+}
+
+/**
+ * The viewer once its document is loaded. The reader's toolbar, which is when
+ * we hear about a new reader, renders before the PDF frame even exists.
+ */
+async function viewerFor(reader: any, timeoutMS = 30000): Promise<any> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMS) {
+    if (pdfApp(reader)?.pdfDocument) return pdfReady(reader);
+    if (!((Zotero.Reader as any)._readers || []).includes(reader)) return null;
+    await sleep(300);
+  }
+  return null;
 }
 
 export function setShowOriginal(reader: any, show: boolean) {
@@ -866,7 +1478,16 @@ export function toggleOriginal(reader: any) {
   setShowOriginal(reader, !isShowingOriginal(reader));
 }
 
-export function clearReader(reader: any) {
+/**
+ * Take the translation off the page. `forget` also deletes the saved copy, so
+ * it does not come back when the paper is opened again — that is the user
+ * removing it; the plugin shutting down only clears the page.
+ */
+export function clearReader(reader: any, options: { forget?: boolean } = {}) {
+  if (options.forget) {
+    const attachment = attachmentOf(reader);
+    if (attachment) void forgetTranslation(attachment);
+  }
   const overlay = overlayFor(reader);
   if (!overlay) return;
   overlay.cancelled = true;
@@ -900,6 +1521,7 @@ export function restyleReader(reader: any) {
   for (const pageView of pageViews(reader)) {
     renderPage(pageView, overlay, doc);
   }
+  paintSelection(reader);
 }
 
 /** Nudge font size or line height and repaint. */

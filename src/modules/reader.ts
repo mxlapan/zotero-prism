@@ -15,9 +15,14 @@ import { translateText } from "./refract/engines";
 import {
   adjust,
   clearReader,
+  contextBlock,
+  copyBlock,
+  editBlock,
+  editedCount,
   hasOverlay,
   isComparing,
   isShowingOriginal,
+  restoreReader,
   toggleCompare,
   toggleOriginal,
   translateReader,
@@ -272,6 +277,9 @@ function onToolbar(event: any) {
   const { reader, doc, append } = event;
   append(toolbarButton(reader, doc));
   bindReaderKeys(reader, doc);
+  // A reader is first heard of here; a paper translated before gets its
+  // translation back without asking anyone for it.
+  if (refractOn()) void restoreReader(reader);
 }
 
 /**
@@ -362,6 +370,7 @@ function primeOpenReaders() {
       section.append(toolbarButton(reader, doc));
       slot.append(section);
       bindReaderKeys(reader, doc);
+      if (refractOn()) void restoreReader(reader);
       Zotero.debug("[Prism] toolbar button added to an already-open reader");
     } catch (e) {
       Zotero.debug(`[Prism] could not prime an open reader: ${e}`);
@@ -457,7 +466,7 @@ function toolbarRows(reader: any): MenuRow[] {
           );
         },
       },
-      { label: bi("Remove translation", "移除翻译"), run: () => clearReader(reader) },
+      { label: bi("Remove translation", "移除翻译"), run: () => removeTranslation(reader) },
     );
   }
   if (refractOn()) {
@@ -497,6 +506,27 @@ function toolbarRows(reader: any): MenuRow[] {
     },
   );
   return rows;
+}
+
+/**
+ * Removing a translation also deletes its saved copy, edits included, so it
+ * asks first when there are edits to lose.
+ */
+function removeTranslation(reader: any) {
+  const edited = editedCount(reader);
+  if (edited) {
+    const win = (reader?._window as Window | undefined) || (Zotero.getMainWindow() as unknown as Window);
+    const ok = Services.prompt.confirm(
+      win as any,
+      bi("Remove translation", "移除翻译"),
+      bi(
+        `${edited} paragraph(s) were edited by hand. Removing the translation discards those edits as well.`,
+        `有 ${edited} 段译文经过手动修改，移除翻译后这些修改也会一并删除。`,
+      ),
+    );
+    if (!ok) return;
+  }
+  clearReader(reader, { forget: true });
 }
 
 function openToolbarMenu(reader: any, doc: Document, anchor: HTMLElement) {
@@ -652,6 +682,17 @@ async function translateAnnotations(reader: any, keys: string[]) {
 
 function onViewMenu(event: any) {
   const { reader, append } = event;
+  const block = contextBlock(reader);
+  if (block) {
+    append({
+      label: bi("Prism: edit this translation", "棱镜：编辑这段译文"),
+      onCommand: () => editBlock(reader, block),
+    });
+    append({
+      label: bi("Prism: copy this translation", "棱镜：复制这段译文"),
+      onCommand: () => copyBlock(reader, block),
+    });
+  }
   append({
     label: hasOverlay(reader)
       ? bi("Prism: toggle original", "棱镜：切换原文 / 译文")

@@ -29,6 +29,7 @@ import { initGapRadar } from "./modules/beam/gapRadar";
 import { scheduleWatches, stopWatches } from "./modules/beam/watchlist";
 import { clearQuickFilter } from "./modules/spectrum/organise";
 import { maybeAutoTranslate } from "./modules/refract/metadata";
+import { annotationsChanged } from "./modules/refract/fulltext";
 import { destroyPanel } from "./modules/lens/panel";
 import { registerPrefsPane, onPrefsLoad } from "./modules/prefsPane";
 import { getItem, toRegularItem } from "./utils/item";
@@ -167,6 +168,10 @@ const observer = {
   ) => {
     if (!addon.data.alive) return;
     try {
+      // A highlight drawn, recoloured or deleted shows on an open translation.
+      if (type === "item" && ["add", "modify", "delete", "trash"].includes(event)) {
+        annotationsChanged();
+      }
       if (type === "item" && event === "add") {
         const items = ids
           .map((id) => getItem(id as number))

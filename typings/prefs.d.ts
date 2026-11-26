@@ -79,6 +79,7 @@ declare namespace _ZoteroTypes {
       "refract.layoutServiceType": string;
       "refract.layoutServiceKey": string;
       "refract.cacheEnabled": boolean;
+      "refract.restoreTranslation": boolean;
       "beam.rhythmGoalMinutes": number;
       "beam.review": boolean;
       "beam.reviewDaily": number;

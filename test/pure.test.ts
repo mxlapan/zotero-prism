@@ -644,6 +644,8 @@ import { extractDelta, stopReason } from "../src/modules/lens/provider";
 import { replyLanguage } from "../src/modules/lens/prompts";
 import { linkifyPages } from "../src/modules/lens/apps";
 import { inkFrom, parseHex, contrast, type RGB } from "../src/modules/refract/ink";
+import { carryEdits, type Block, type SavedTranslation } from "../src/modules/refract/saved";
+import { locateQuote, mapToTranslation, runsOf } from "../src/modules/refract/marks";
 
 const t1 = splitTemplate("Question: ${P.question}\n\n${await P.fullText()}");
 ok("splitTemplate finds both expressions", t1.expressions.length === 2, JSON.stringify(t1.expressions));
@@ -915,6 +917,60 @@ ok("a page range keeps its own numbering", withPageMarkers(["x", "y"], 4).starts
   ok("an empty patch of paper still gets a readable ink", !!blank && near(blank.background, [250, 248, 240], 2) && contrast(parseHex(blank.foreground)!, [250, 248, 240]) >= 4.5, JSON.stringify(blank));
 
   ok("too few samples to judge", inkFrom([255, 255, 255, 0, 0, 0]) === null);
+}
+
+/* ---- refract: hand edits survive a fresh translation ---- */
+{
+  const block = (original: string, translated: string, machine?: string): Block => ({
+    box: [0, 0, 100, 20],
+    lines: [[0, 0, 100, 20]],
+    original,
+    translated,
+    fontSize: 10,
+    kind: "body",
+    ...(machine === undefined ? {} : { machine }),
+  });
+  const previous: SavedTranslation = {
+    version: 1,
+    fingerprint: "f",
+    engine: "google",
+    to: "zh-CN",
+    savedAt: 0,
+    pages: [[0, [block("Cats sleep.", "猫咪在睡觉。", "猫睡觉。"), block("Dogs bark.", "狗叫。")]]],
+  };
+  const fresh = new Map<number, Block[]>([[0, [block("Dogs bark.", "狗在叫。"), block("Cats sleep.", "猫睡。")]]]);
+  const carried = carryEdits(fresh, previous);
+  const [dogs, cats] = fresh.get(0)!;
+  ok("an edited paragraph keeps its edit on re-translation", carried === 1 && cats.translated === "猫咪在睡觉。" && cats.machine === "猫睡。", JSON.stringify(cats));
+  ok("an unedited paragraph takes the fresh translation", dogs.translated === "狗在叫。" && dogs.machine === undefined, JSON.stringify(dogs));
+  ok("nothing to carry without a saved copy", carryEdits(new Map(), null) === 0);
+}
+
+/* ---- refract: highlights carried onto the translation ---- */
+{
+  const original =
+    "All these results refer to settings in which coupling signals are continuously present. However, the realization of coupling requires significant effort. The question arises to which extent synchronization can be achieved.";
+  const translated = "所有这些结果都涉及耦合信号持续存在的设置。然而，耦合的实现需要付出巨大的努力。问题在于同步能在多大程度上实现。";
+
+  const quote = "however, the realiza-\ntion of coupling requires signiﬁcant effort";
+  const found = locateQuote(original, quote);
+  ok("a quote is found across a line-break hyphen and a ligature", !!found && original.slice(found[0], found[1]) === "However, the realization of coupling requires significant effort", JSON.stringify(found && original.slice(found[0], found[1])));
+
+  const mapped = found && mapToTranslation(original, translated, found);
+  ok("the highlight lands on the matching translated sentence", !!mapped && translated.slice(mapped[0], mapped[1]) === "然而，耦合的实现需要付出巨大的努力。", JSON.stringify(mapped && translated.slice(mapped[0], mapped[1])));
+
+  const runOn = locateQuote(original, "The question arises to which extent synchronization can be achieved with only infrequent coupling");
+  ok("a quote running into the next paragraph covers the rest of this one", !!runOn && original.slice(runOn[0]).startsWith("The question arises") && runOn[1] === original.length, JSON.stringify(runOn));
+  ok("a quote from elsewhere is not found", locateQuote(original, "the union of all graphs is connected") === null);
+
+  // sentence counts differ: scaled, then widened to clause boundaries
+  const merged = "所有这些结果都涉及耦合信号持续存在的设置，然而耦合的实现需要付出巨大的努力；问题在于同步能在多大程度上实现。";
+  const scaled = found && mapToTranslation(original, merged, found);
+  ok("without matching sentences the mark still falls on whole clauses", !!scaled && /^然而/.test(merged.slice(scaled[0], scaled[1])) && /努力；$/.test(merged.slice(scaled[0], scaled[1])), JSON.stringify(scaled && merged.slice(scaled[0], scaled[1])));
+
+  const runs = runsOf("然而，耦合的实现需要", 21, [{ start: 24, end: 27, color: "#f00", kind: "highlight" }]);
+  ok("a line is split into marked and unmarked runs", runs.map((run) => `${run.text}${run.marks.length ? "*" : ""}`).join("|") === "然而，|耦合的*|实现需要", JSON.stringify(runs.map((run) => run.text)));
+  ok("a line with no marks is one run", runsOf("abc", 0, []).length === 1);
 }
 
 console.log(fails.length ? `\n${fails.length} FAILURES` : "\nall green");

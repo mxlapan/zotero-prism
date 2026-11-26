@@ -643,3 +643,67 @@
 .prism-progress-seg {
   height: 100%;
 }
+
+/* ------------------------------------------------------ translation editor */
+
+.prism-panel.prism-editor {
+  min-height: 0;
+  z-index: 2147483100;
+}
+
+.prism-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px 4px;
+}
+
+.prism-editor-label {
+  font-size: 11px;
+  color: var(--prism-fg-soft);
+}
+
+.prism-editor-original {
+  max-height: 110px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--prism-bg-soft);
+  color: var(--prism-fg-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
+}
+
+.prism-editor-input {
+  min-height: 130px;
+  resize: vertical;
+  padding: 8px 9px;
+  border: 1px solid var(--prism-border);
+  border-radius: 8px;
+  background: var(--prism-bg);
+  color: var(--prism-fg);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.prism-editor-input:focus {
+  border-color: var(--prism-accent);
+  outline: 2px solid var(--prism-accent-soft);
+}
+
+.prism-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+}
+
+.prism-editor-hint {
+  margin-inline-start: auto;
+  font-size: 11px;
+  color: var(--prism-fg-soft);
+}
