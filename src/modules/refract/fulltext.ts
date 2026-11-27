@@ -156,8 +156,13 @@ export function isShowingOriginal(reader: any): boolean {
   return !!overlayFor(reader)?.showOriginal;
 }
 
+/** The overlay's styles; rewritten when an update left a reader with older ones. */
 function injectCSS(doc: Document) {
-  if (doc.getElementById("prism-tr-css")) return;
+  const existing = doc.getElementById("prism-tr-css");
+  if (existing) {
+    if (existing.textContent !== OVERLAY_CSS) existing.textContent = OVERLAY_CSS;
+    return;
+  }
   const style = doc.createElement("style");
   style.id = "prism-tr-css";
   style.textContent = OVERLAY_CSS;

@@ -121,9 +121,19 @@ export function clear(node: Element) {
   while (node.firstChild) node.firstChild.remove();
 }
 
-/** Inject a `<style>` block once per document. */
+/**
+ * Inject a `<style>` block, or bring an existing one up to date.
+ *
+ * A plugin update does not reload documents that are already open, such as a
+ * reader tab, so a block found by its id may hold the previous version's
+ * rules; it is rewritten when its text differs.
+ */
 export function injectStyle(doc: Document, id: string, css: string) {
-  if (doc.getElementById(id)) return;
+  const existing = doc.getElementById(id);
+  if (existing) {
+    if (existing.textContent !== css) existing.textContent = css;
+    return;
+  }
   const style = doc.createElementNS(
     "http://www.w3.org/1999/xhtml",
     "style",
@@ -133,9 +143,17 @@ export function injectStyle(doc: Document, id: string, css: string) {
   (doc.head || doc.documentElement).append(style);
 }
 
-/** Inject a stylesheet link once per document. */
+/** Identifies the stylesheet links injected by this instance of the plugin. */
+const INSTANCE = Math.random().toString(36).slice(2);
+
+/**
+ * Inject a stylesheet link, once per document and plugin instance. A link left
+ * by a previous version is replaced: the add-on manager flushes the chrome
+ * caches on update, so the new link loads the new file.
+ */
 export function injectStylesheet(doc: Document, id: string, href: string) {
-  if (doc.getElementById(id)) return;
+  const existing = doc.getElementById(id) as HTMLElement | null;
+  if (existing?.dataset.prismInstance === INSTANCE) return;
   const link = doc.createElementNS(
     "http://www.w3.org/1999/xhtml",
     "link",
@@ -143,7 +161,9 @@ export function injectStylesheet(doc: Document, id: string, href: string) {
   link.id = id;
   link.rel = "stylesheet";
   link.href = href;
-  (doc.head || doc.documentElement).append(link);
+  link.dataset.prismInstance = INSTANCE;
+  if (existing) existing.replaceWith(link);
+  else (doc.head || doc.documentElement).append(link);
 }
 
 /**
