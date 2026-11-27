@@ -34,8 +34,9 @@ ok("HTTP error keeps its status for the engines", http instanceof HTTPError && /
 is("DeepL quota used up", 456, `{"message":"Quota exceeded"}`, "quota");
 
 /* DeepL rejects a key sent as `auth_key` in the body since 15 January 2026; the
-   same key kept working in other plugins, which send it as a header. */
-(async () => {
+   same key kept working in other plugins, which send it as a header.
+   The runner waits on `__testsDone` before moving on. */
+(globalThis as any).__testsDone = (async () => {
   const sent: any[] = [];
   const zotero = (globalThis as any).Zotero;
   const previous = zotero.HTTP;

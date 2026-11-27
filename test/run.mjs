@@ -52,6 +52,11 @@ for (const file of files) {
   });
   console.log(`\n── ${file}`);
   require(out);
+  // A file with asynchronous tests leaves their promise here. Without waiting
+  // for it, anything past real I/O (WebCrypto, timers) ran after the process
+  // had exited, and its failures were never seen.
+  await globalThis.__testsDone;
+  delete globalThis.__testsDone;
 }
 
 await rm(dir, { recursive: true, force: true });
