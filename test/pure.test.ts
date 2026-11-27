@@ -1,7 +1,7 @@
 import { chunkText, splitSentences, estimateTokens, clampTokens, dropReferences, hash, lexTokens } from "../src/utils/text";
 import { quantize, dequantize, cosine } from "../src/lib/vector";
 import { tagLinks, nodeLabel, fitLabel } from "../src/lib/forcegraph";
-import { ENGINES, requiredKeys } from "../src/modules/refract/engines";
+import { ENGINES, requiredKeys, packs, piecesWithin, cloudError } from "../src/modules/refract/engines";
 import {
   toLines,
   toParagraphs,
@@ -778,10 +778,18 @@ const storedKeys: Record<string, string[]> = {
   deeplx: ["endpoint"],
   deepl: ["authKey"],
   microsoft: ["key", "region"],
-  baidu: ["appid", "key"],
+  baidu: ["appid", "key", "domain"],
   youdao: ["appKey", "appSecret"],
   niutrans: ["apikey"],
   libretranslate: ["endpoint", "apiKey"],
+  googlecloud: ["apiKey"],
+  tencent: ["secretId", "secretKey", "region"],
+  aliyun: ["accessKeyId", "accessKeySecret"],
+  volcengine: ["accessKeyId", "secretAccessKey"],
+  caiyun: ["token"],
+  amazon: ["accessKeyId", "secretAccessKey", "region"],
+  yandex: ["apiKey", "folderId"],
+  mymemory: ["email"],
 };
 for (const engine of ENGINES) {
   const names = (engine.fields || []).map((field) => field.name);
@@ -792,6 +800,22 @@ for (const engine of ENGINES) {
     ok(`engine ${engine.id}.${field.name}: labelled in both languages`, !!field.label[0] && !!field.label[1]);
   }
 }
+for (const id of ["volcano", "mymemory"]) {
+  const engine = ENGINES.find((e) => e.id === id)!;
+  ok(`${id} runs without credentials, so it can stand in when another engine fails`, !!engine && requiredKeys(engine).length === 0);
+}
+ok("a batch is split by count", JSON.stringify(packs(["a", "b", "c"], 2, 100)) === '[["a","b"],["c"]]');
+ok("a batch is split by size", JSON.stringify(packs(["aaaa", "bbbb", "cc"], 10, 8)) === '[["aaaa","bbbb"],["cc"]]', JSON.stringify(packs(["aaaa", "bbbb", "cc"], 10, 8)));
+ok("an oversized text is sent on its own", JSON.stringify(packs(["x".repeat(20), "y"], 10, 8)) === JSON.stringify([["x".repeat(20)], ["y"]]));
+const longParagraph = "The first sentence is here. ".repeat(40);
+const memoryPieces = piecesWithin(longParagraph, 450);
+ok("a long paragraph is cut at sentence ends under the limit", memoryPieces.length > 1 && memoryPieces.every((p) => p.length <= 450) && memoryPieces.join(" ").replace(/\s+/g, " ") === longParagraph.trim().replace(/\s+/g, " "), String(memoryPieces.map((p) => p.length)));
+const unbroken = "x".repeat(1000);
+ok("a sentence with no spaces is still cut", piecesWithin(unbroken, 450).every((p) => p.length <= 450) && piecesWithin(unbroken, 450).join("") === unbroken);
+ok("a bad credential stops the engine", (cloudError("Tencent Cloud", "AuthFailure.SecretIdNotFound", "x") as any).kind === "auth");
+ok("a used-up allowance stops the engine", (cloudError("MyMemory", "QuotaExceeded", "x") as any).kind === "quota");
+ok("other errors leave the engine running", (cloudError("Volcano Engine", "-400", "bad text") as any).kind === undefined);
+
 const microsoft = ENGINES.find((engine) => engine.id === "microsoft")!;
 ok("microsoft runs without a region (Global resource)",
    JSON.stringify(requiredKeys(microsoft).map((field) => field.name)) === '["key"]');

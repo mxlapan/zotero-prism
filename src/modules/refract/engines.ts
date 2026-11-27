@@ -10,7 +10,8 @@ import { getJSONPref, getPref } from "../../utils/prefs";
 import { bi } from "../../utils/locale";
 import { request, errorText } from "../../utils/http";
 import { chat } from "../lens/provider";
-import { hash } from "../../utils/text";
+import { hash, splitSentences } from "../../utils/text";
+import { aliyunSignature, amzDate, sha256Hex, signV4 } from "./signing";
 import { JSONStore } from "../../utils/store";
 
 export interface EngineContext {
@@ -106,6 +107,17 @@ function langFor(engine: string, code: string): string {
     baidu: { "zh-cn": "zh", "zh-tw": "cht", en: "en", ja: "jp", ko: "kor", de: "de", fr: "fra", es: "spa", ru: "ru", auto: "auto" },
     youdao: { "zh-cn": "zh-CHS", "zh-tw": "zh-CHT", en: "en", ja: "ja", ko: "ko", auto: "auto" },
     niutrans: { "zh-cn": "zh", "zh-tw": "cht", en: "en", ja: "ja", ko: "ko", auto: "auto" },
+    // Azure names the Chinese scripts; zh-CN and zh-TW are not its codes.
+    microsoft: { "zh-cn": "zh-Hans", "zh-tw": "zh-Hant" },
+    volcano: { "zh-cn": "zh", "zh-tw": "zh-Hant", auto: "detect" },
+    volcengine: { "zh-cn": "zh", "zh-tw": "zh-Hant", auto: "" },
+    tencent: { "zh-cn": "zh", "zh-tw": "zh-TW", auto: "auto" },
+    aliyun: { "zh-cn": "zh", "zh-tw": "zh-tw", auto: "auto" },
+    caiyun: { "zh-cn": "zh", "zh-tw": "zh-Hant", auto: "auto" },
+    googlecloud: { auto: "" },
+    amazon: { "zh-cn": "zh", "zh-tw": "zh-TW", auto: "auto" },
+    yandex: { "zh-cn": "zh", "zh-tw": "zh", auto: "" },
+    mymemory: { auto: "autodetect" },
   };
   return table[engine]?.[lower] ?? code;
 }
@@ -134,12 +146,91 @@ async function md5(text: string): Promise<string> {
   return digest;
 }
 
-async function sha256(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+const sha256 = sha256Hex;
+
+/**
+ * An error a cloud API reported in its response body, with the failure kind
+ * the fallback logic reads: a credential problem or a used-up quota ends that
+ * engine's run at once instead of failing paragraph by paragraph.
+ */
+export function cloudError(service: string, code: unknown, message: unknown): Error {
+  const text = `${service} ${code ?? ""}: ${message ?? ""}`;
+  const tag = String(code ?? "");
+  const kind = /auth|signature|accesskey|secretid|token|credential|forbidden|unauthori|invalidkey|apikey/i.test(tag)
+    ? "auth"
+    : /quota|limit|balance|arrear|insufficient/i.test(tag)
+      ? "quota"
+      : undefined;
+  return Object.assign(new Error(text), kind ? { kind } : {});
+}
+
+/**
+ * Split a batch so that no request carries more than `items` texts or about
+ * `chars` characters — the per-request limits the cloud APIs set. A text
+ * longer than `chars` goes on its own.
+ */
+export function packs(texts: string[], items: number, chars: number): string[][] {
+  const out: string[][] = [];
+  let current: string[] = [];
+  let size = 0;
+  for (const text of texts) {
+    if (current.length && (current.length >= items || size + text.length > chars)) {
+      out.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(text);
+    size += text.length;
+  }
+  if (current.length) out.push(current);
+  return out;
+}
+
+async function inPacks(
+  texts: string[],
+  items: number,
+  chars: number,
+  run: (pack: string[]) => Promise<string[]>,
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const pack of packs(texts, items, chars)) {
+    const done = await run(pack);
+    for (let i = 0; i < pack.length; i++) out.push(done[i] ?? "");
+  }
+  return out;
+}
+
+/** Sentences regrouped into pieces of at most `limit` characters. */
+export function piecesWithin(text: string, limit: number): string[] {
+  const pieces: string[] = [];
+  let current = "";
+  const push = () => {
+    if (current.trim()) pieces.push(current.trim());
+    current = "";
+  };
+  for (const sentence of splitSentences(text)) {
+    if ((current + " " + sentence).length > limit) push();
+    if (sentence.length <= limit) {
+      current = current ? `${current} ${sentence}` : sentence;
+      continue;
+    }
+    // One sentence over the limit: cut it at spaces, or hard if it has none.
+    let rest = sentence;
+    while (rest.length > limit) {
+      const cut = rest.lastIndexOf(" ", limit);
+      const at = cut > limit / 2 ? cut : limit;
+      pieces.push(rest.slice(0, at).trim());
+      rest = rest.slice(at);
+    }
+    current = rest;
+  }
+  push();
+  return pieces.length ? pieces : [text];
+}
+
+/** Rejoin translated pieces: no space between them in Chinese or Japanese. */
+function rejoin(pieces: string[], to: string): string {
+  return pieces.join(/^(zh|ja)/i.test(to) ? "" : " ");
 }
 
 /* ------------------------------------------------------------------ engines */
@@ -166,6 +257,38 @@ export const ENGINES: Engine[] = [
         const { text: body } = await request("GET", url, { timeout: 20000 });
         const data = JSON.parse(body);
         out.push((data?.[0] || []).map((part: any[]) => part[0]).join(""));
+      }
+      return out;
+    },
+  },
+  {
+    id: "volcano",
+    get label() {
+      return bi("Volcano Translate (free)", "火山翻译（免费）");
+    },
+    help: {
+      text: [
+        "Free, no key. Uses the endpoint of the Volcano Translate browser extension, which is not a published API and may change or be rate-limited.",
+        "免费，无需密钥。使用火山翻译浏览器插件的接口，该接口未正式公开，可能变更或限流。",
+      ],
+    },
+    batch: 1,
+    async translate(texts, ctx) {
+      const out: string[] = [];
+      for (const text of texts) {
+        const { text: body } = await request("POST", "https://translate.volcengine.com/crx/translate/v1/", {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_language: langFor("volcano", ctx.from),
+            target_language: langFor("volcano", ctx.to),
+            text,
+          }),
+          timeout: 20000,
+        });
+        const data = JSON.parse(body);
+        const status = data?.base_resp?.status_code;
+        if (status) throw cloudError("Volcano Translate", status, data.base_resp.status_message);
+        out.push(data?.translation || "");
       }
       return out;
     },
@@ -286,8 +409,8 @@ export const ENGINES: Engine[] = [
     batch: 25,
     async translate(texts, ctx) {
       const url =
-        `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=${ctx.to}` +
-        (ctx.from !== "auto" ? `&from=${ctx.from}` : "");
+        `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=${langFor("microsoft", ctx.to)}` +
+        (ctx.from !== "auto" ? `&from=${langFor("microsoft", ctx.from)}` : "");
       const { text: body } = await request("POST", url, {
         headers: {
           "Content-Type": "application/json",
@@ -301,6 +424,34 @@ export const ENGINES: Engine[] = [
     },
   },
   {
+    id: "googlecloud",
+    label: "Google Cloud Translation",
+    fields: [{ name: "apiKey", label: ["API key", "API 密钥"], secret: true, placeholder: "AIza…" }],
+    help: {
+      text: [
+        "Google Cloud console → APIs & Services → Credentials: create an API key, in a project with the Cloud Translation API enabled.",
+        "Google Cloud 控制台 → API 和服务 → 凭据：创建 API 密钥；所在项目需启用 Cloud Translation API。",
+      ],
+      url: "https://console.cloud.google.com/apis/credentials",
+    },
+    batch: 25,
+    async translate(texts, ctx) {
+      return inPacks(texts, 25, 5000, async (pack) => {
+        const source = langFor("googlecloud", ctx.from);
+        const { text: body } = await request(
+          "POST",
+          `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(ctx.keys.apiKey || "")}`,
+          {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ q: pack, target: ctx.to, format: "text", ...(source ? { source } : {}) }),
+            timeout: 40000,
+          },
+        );
+        return (JSON.parse(body)?.data?.translations || []).map((t: any) => t.translatedText || "");
+      });
+    },
+  },
+  {
     id: "baidu",
     get label() {
       return bi("Baidu", "百度翻译");
@@ -308,6 +459,16 @@ export const ENGINES: Engine[] = [
     fields: [
       { name: "appid", label: ["APP ID", "APP ID"], placeholder: "20xxxxxxxxxxxxxxx" },
       { name: "key", label: ["Secret key", "密钥"], secret: true },
+      {
+        name: "domain",
+        label: ["Domain", "领域"],
+        optional: true,
+        placeholder: ["empty for general translation", "留空为通用翻译"],
+        hint: [
+          "Field translation: academic (papers), senimed (biomedicine), it, finance, machinery, aerospace, law. Enable the field on the Baidu console first.",
+          "领域翻译：academic（学术论文）、senimed（生物医药）、it（信息技术）、finance（金融）、machinery（机械）、aerospace（航空航天）、law（法律）。需先在百度翻译控制台开通对应领域。",
+        ],
+      },
     ],
     help: {
       text: [
@@ -319,10 +480,12 @@ export const ENGINES: Engine[] = [
     batch: 1,
     async translate(texts, ctx) {
       const out: string[] = [];
+      const domain = (ctx.keys.domain || "").trim();
       for (const text of texts) {
         const salt = String(Date.now());
+        // Field translation signs the domain too, between the salt and the key.
         const sign = await md5(
-          `${ctx.keys.appid}${text}${salt}${ctx.keys.key}`,
+          `${ctx.keys.appid}${text}${salt}${domain}${ctx.keys.key}`,
         );
         const params = new URLSearchParams({
           q: text,
@@ -332,9 +495,10 @@ export const ENGINES: Engine[] = [
           salt,
           sign,
         });
+        if (domain) params.set("domain", domain);
         const { text: body } = await request(
           "POST",
-          "https://fanyi-api.baidu.com/api/trans/vip/translate",
+          `https://fanyi-api.baidu.com/api/trans/vip/${domain ? "fieldtranslate" : "translate"}`,
           {
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: params.toString(),
@@ -407,6 +571,252 @@ export const ENGINES: Engine[] = [
     },
   },
   {
+    id: "tencent",
+    get label() {
+      return bi("Tencent Cloud Machine Translation", "腾讯云机器翻译");
+    },
+    fields: [
+      { name: "secretId", label: ["SecretId", "SecretId"], placeholder: "AKID…" },
+      { name: "secretKey", label: ["SecretKey", "SecretKey"], secret: true },
+      {
+        name: "region",
+        label: ["Region", "地域"],
+        optional: true,
+        placeholder: ["ap-beijing if empty", "留空为 ap-beijing"],
+      },
+    ],
+    help: {
+      text: [
+        "Tencent Cloud console → Access Management → API Keys: create a SecretId and SecretKey. Activate Machine Translation in its console first.",
+        "腾讯云控制台 → 访问管理 → API 密钥管理：新建 SecretId 与 SecretKey。需先在机器翻译控制台开通服务。",
+      ],
+      url: "https://console.cloud.tencent.com/cam/capi",
+    },
+    batch: 1,
+    async translate(texts, ctx) {
+      const host = "tmt.tencentcloudapi.com";
+      const out: string[] = [];
+      for (const text of texts) {
+        const payload = JSON.stringify({
+          SourceText: text,
+          Source: langFor("tencent", ctx.from),
+          Target: langFor("tencent", ctx.to),
+          ProjectId: 0,
+        });
+        const now = Math.floor(Date.now() / 1000);
+        // Only the two required headers are signed: Tencent signs the
+        // X-TC-Action value lower-cased, which is easy to get wrong.
+        const authorization = await signV4({
+          algorithm: "TC3-HMAC-SHA256",
+          secretPrefix: "TC3",
+          terminator: "tc3_request",
+          regionInScope: false,
+          accessKey: ctx.keys.secretId || "",
+          secretKey: ctx.keys.secretKey || "",
+          region: "",
+          service: "tmt",
+          method: "POST",
+          path: "/",
+          headers: { "Content-Type": "application/json", Host: host },
+          payload,
+          date: new Date(now * 1000).toISOString().slice(0, 10),
+          stamp: String(now),
+        });
+        const { text: body } = await request("POST", `https://${host}/`, {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: authorization,
+            "X-TC-Action": "TextTranslate",
+            "X-TC-Version": "2018-03-21",
+            "X-TC-Region": ctx.keys.region || "ap-beijing",
+            "X-TC-Timestamp": String(now),
+          },
+          body: payload,
+          timeout: 25000,
+        });
+        const data = JSON.parse(body)?.Response;
+        if (data?.Error) throw cloudError("Tencent Cloud", data.Error.Code, data.Error.Message);
+        out.push(data?.TargetText || "");
+      }
+      return out;
+    },
+  },
+  {
+    id: "aliyun",
+    get label() {
+      return bi("Alibaba Cloud Machine Translation", "阿里云机器翻译");
+    },
+    fields: [
+      { name: "accessKeyId", label: ["AccessKey ID", "AccessKey ID"], placeholder: "LTAI…" },
+      { name: "accessKeySecret", label: ["AccessKey secret", "AccessKey Secret"], secret: true },
+    ],
+    help: {
+      text: [
+        "Alibaba Cloud console → AccessKey management: create an AccessKey (preferably for a RAM user allowed to use Machine Translation). Activate Machine Translation first.",
+        "阿里云控制台 → AccessKey 管理：创建 AccessKey（建议使用仅授权机器翻译的 RAM 用户）。需先开通机器翻译服务。",
+      ],
+      url: "https://ram.console.aliyun.com/manage/ak",
+    },
+    batch: 1,
+    async translate(texts, ctx) {
+      const out: string[] = [];
+      for (const text of texts) {
+        const params: Record<string, string> = {
+          Format: "JSON",
+          Version: "2018-10-12",
+          AccessKeyId: ctx.keys.accessKeyId || "",
+          SignatureMethod: "HMAC-SHA1",
+          SignatureVersion: "1.0",
+          SignatureNonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+          Action: "TranslateGeneral",
+          FormatType: "text",
+          Scene: "general",
+          SourceLanguage: langFor("aliyun", ctx.from),
+          TargetLanguage: langFor("aliyun", ctx.to),
+          SourceText: text,
+        };
+        params.Signature = await aliyunSignature("POST", params, ctx.keys.accessKeySecret || "");
+        let body: string;
+        try {
+          ({ text: body } = await request("POST", "https://mt.cn-hangzhou.aliyuncs.com/", {
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(params).toString(),
+            timeout: 25000,
+          }));
+        } catch (e: any) {
+          // An unknown AccessKey comes back as HTTP 404, which on its own
+          // reads as a wrong address; the code in the body says what it is.
+          let reply: any = null;
+          try {
+            reply = JSON.parse(e?.body || "");
+          } catch {
+            /* not a JSON error */
+          }
+          if (reply?.Code) throw cloudError("Alibaba Cloud", reply.Code, reply.Message);
+          throw e;
+        }
+        const data = JSON.parse(body);
+        if (data?.Code && String(data.Code) !== "200") {
+          throw cloudError("Alibaba Cloud", data.Code, data.Message);
+        }
+        out.push(data?.Data?.Translated || "");
+      }
+      return out;
+    },
+  },
+  {
+    id: "volcengine",
+    get label() {
+      return bi("Volcano Engine Machine Translation", "火山引擎机器翻译");
+    },
+    fields: [
+      { name: "accessKeyId", label: ["Access Key ID", "Access Key ID"], placeholder: "AKLT…" },
+      { name: "secretAccessKey", label: ["Secret Access Key", "Secret Access Key"], secret: true },
+    ],
+    help: {
+      text: [
+        "Volcano Engine console → API access keys: create an Access Key. Activate Machine Translation first.",
+        "火山引擎控制台 → API 访问密钥：新建 Access Key。需先开通机器翻译服务。",
+      ],
+      url: "https://console.volcengine.com/iam/keymanage/",
+    },
+    batch: 16,
+    async translate(texts, ctx) {
+      const host = "translate.volcengineapi.com";
+      const query = { Action: "TranslateText", Version: "2020-06-01" };
+      // At most 16 texts and 5,000 characters a request.
+      return inPacks(texts, 16, 4500, async (pack) => {
+        const source = langFor("volcengine", ctx.from);
+        const payload = JSON.stringify({
+          TargetLanguage: langFor("volcengine", ctx.to),
+          ...(source ? { SourceLanguage: source } : {}),
+          TextList: pack,
+        });
+        const stamp = amzDate(new Date());
+        const contentHash = await sha256Hex(payload);
+        const signed = {
+          "Content-Type": "application/json",
+          Host: host,
+          "X-Content-Sha256": contentHash,
+          "X-Date": stamp,
+        };
+        const authorization = await signV4({
+          algorithm: "HMAC-SHA256",
+          secretPrefix: "",
+          terminator: "request",
+          regionInScope: true,
+          accessKey: ctx.keys.accessKeyId || "",
+          secretKey: ctx.keys.secretAccessKey || "",
+          region: "cn-north-1",
+          service: "translate",
+          method: "POST",
+          path: "/",
+          query,
+          headers: signed,
+          payload,
+          date: stamp.slice(0, 8),
+          stamp,
+        });
+        const { text: body } = await request(
+          "POST",
+          `https://${host}/?Action=${query.Action}&Version=${query.Version}`,
+          {
+            headers: {
+              "Content-Type": signed["Content-Type"],
+              "X-Content-Sha256": contentHash,
+              "X-Date": stamp,
+              Authorization: authorization,
+            },
+            body: payload,
+            timeout: 40000,
+          },
+        );
+        const data = JSON.parse(body);
+        const error = data?.ResponseMetadata?.Error;
+        if (error?.Code) throw cloudError("Volcano Engine", error.Code, error.Message);
+        return (data?.TranslationList || []).map((t: any) => t.Translation || "");
+      });
+    },
+  },
+  {
+    id: "caiyun",
+    get label() {
+      return bi("Caiyun Xiaoyi", "彩云小译");
+    },
+    fields: [{ name: "token", label: ["Token", "令牌"], secret: true }],
+    help: {
+      text: [
+        "Caiyun open platform → Console → Xiaoyi translation API: copy the token.",
+        "彩云科技开放平台 → 控制台 → 小译翻译 API：复制令牌。",
+      ],
+      url: "https://dashboard.caiyunapp.com/",
+    },
+    batch: 20,
+    async translate(texts, ctx) {
+      return inPacks(texts, 20, 5000, async (pack) => {
+        const { text: body } = await request("POST", "https://api.interpreter.caiyunai.com/v1/translator", {
+          headers: {
+            "Content-Type": "application/json",
+            "x-authorization": `token ${ctx.keys.token || ""}`,
+          },
+          body: JSON.stringify({
+            source: pack,
+            trans_type: `${langFor("caiyun", ctx.from)}2${langFor("caiyun", ctx.to)}`,
+            request_id: "zotero-prism",
+            detect: true,
+          }),
+          timeout: 40000,
+        });
+        const data = JSON.parse(body);
+        if (!Array.isArray(data?.target)) {
+          throw cloudError("Caiyun", data?.rc ?? "error", data?.message || body.slice(0, 120));
+        }
+        return data.target.map((t: any) => String(t ?? ""));
+      });
+    },
+  },
+  {
     id: "niutrans",
     get label() {
       return bi("NiuTrans", "小牛翻译");
@@ -442,6 +852,115 @@ export const ENGINES: Engine[] = [
         out.push(data.tgt_text || "");
       }
       return out;
+    },
+  },
+  {
+    id: "amazon",
+    label: "Amazon Translate",
+    fields: [
+      { name: "accessKeyId", label: ["Access key ID", "访问密钥 ID"], placeholder: "AKIA…" },
+      { name: "secretAccessKey", label: ["Secret access key", "秘密访问密钥"], secret: true },
+      {
+        name: "region",
+        label: ["Region", "区域"],
+        optional: true,
+        placeholder: ["us-east-1 if empty", "留空为 us-east-1"],
+      },
+    ],
+    help: {
+      text: [
+        "AWS console → IAM → Users → Security credentials: create an access key for a user allowed translate:TranslateText.",
+        "AWS 控制台 → IAM → 用户 → 安全凭证：为拥有 translate:TranslateText 权限的用户创建访问密钥。",
+      ],
+      url: "https://console.aws.amazon.com/iam/home#/security_credentials",
+    },
+    batch: 1,
+    async translate(texts, ctx) {
+      const region = ctx.keys.region || "us-east-1";
+      const host = `translate.${region}.amazonaws.com`;
+      const out: string[] = [];
+      for (const text of texts) {
+        const payload = JSON.stringify({
+          Text: text,
+          SourceLanguageCode: langFor("amazon", ctx.from),
+          TargetLanguageCode: langFor("amazon", ctx.to),
+        });
+        const stamp = amzDate(new Date());
+        const signed = {
+          "Content-Type": "application/x-amz-json-1.1",
+          Host: host,
+          "X-Amz-Date": stamp,
+          "X-Amz-Target": "AWSShineFrontendService_20170701.TranslateText",
+        };
+        const authorization = await signV4({
+          algorithm: "AWS4-HMAC-SHA256",
+          secretPrefix: "AWS4",
+          terminator: "aws4_request",
+          regionInScope: true,
+          accessKey: ctx.keys.accessKeyId || "",
+          secretKey: ctx.keys.secretAccessKey || "",
+          region,
+          service: "translate",
+          method: "POST",
+          path: "/",
+          headers: signed,
+          payload,
+          date: stamp.slice(0, 8),
+          stamp,
+        });
+        const { text: body } = await request("POST", `https://${host}/`, {
+          headers: {
+            "Content-Type": signed["Content-Type"],
+            "X-Amz-Date": stamp,
+            "X-Amz-Target": signed["X-Amz-Target"],
+            Authorization: authorization,
+          },
+          body: payload,
+          timeout: 25000,
+        });
+        out.push(JSON.parse(body)?.TranslatedText || "");
+      }
+      return out;
+    },
+  },
+  {
+    id: "yandex",
+    label: "Yandex Cloud Translate",
+    fields: [
+      { name: "apiKey", label: ["API key", "API 密钥"], secret: true },
+      {
+        name: "folderId",
+        label: ["Folder ID", "目录 ID"],
+        optional: true,
+        placeholder: ["only for a user account's key", "仅使用用户账号密钥时需要"],
+      },
+    ],
+    help: {
+      text: [
+        "Yandex Cloud console → a service account with the ai.translate.user role → create an API key.",
+        "Yandex Cloud 控制台 → 为拥有 ai.translate.user 角色的服务账号创建 API 密钥。",
+      ],
+      url: "https://yandex.cloud/en/docs/translate/operations/translate",
+    },
+    batch: 25,
+    async translate(texts, ctx) {
+      return inPacks(texts, 25, 9000, async (pack) => {
+        const source = langFor("yandex", ctx.from);
+        const { text: body } = await request("POST", "https://translate.api.cloud.yandex.net/translate/v2/translate", {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Api-Key ${ctx.keys.apiKey || ""}`,
+          },
+          body: JSON.stringify({
+            targetLanguageCode: langFor("yandex", ctx.to),
+            texts: pack,
+            ...(source ? { sourceLanguageCode: source } : {}),
+            ...(ctx.keys.folderId ? { folderId: ctx.keys.folderId } : {}),
+          }),
+          timeout: 40000,
+        });
+        return (JSON.parse(body)?.translations || []).map((t: any) => t.text || "");
+      });
     },
   },
   {
@@ -487,6 +1006,60 @@ export const ENGINES: Engine[] = [
           timeout: 30000,
         });
         out.push(JSON.parse(body).translatedText || "");
+      }
+      return out;
+    },
+  },
+  {
+    id: "mymemory",
+    get label() {
+      return bi("MyMemory (free)", "MyMemory（免费）");
+    },
+    fields: [
+      {
+        name: "email",
+        label: ["Email", "邮箱"],
+        optional: true,
+        placeholder: ["raises the daily allowance", "填写后提高每日额度"],
+        hint: [
+          "Without an email the allowance is about 5,000 characters a day; with one, about 50,000.",
+          "未填写邮箱时每日约 5000 字符，填写后约 5 万字符。",
+        ],
+      },
+    ],
+    help: {
+      text: [
+        "Free public API from Translated, no key. A request takes at most 500 characters, so long paragraphs are sent in pieces; best kept as a last resort.",
+        "Translated 提供的免费公共接口，无需密钥。单次请求最多 500 字符，长段落会分段发送；适合作为最后的备选。",
+      ],
+      url: "https://mymemory.translated.net/doc/usagelimits.php",
+    },
+    batch: 1,
+    async translate(texts, ctx) {
+      const out: string[] = [];
+      for (const text of texts) {
+        const pieces: string[] = [];
+        for (const piece of piecesWithin(text, 450)) {
+          const params = new URLSearchParams({
+            q: piece,
+            langpair: `${langFor("mymemory", ctx.from)}|${langFor("mymemory", ctx.to)}`,
+          });
+          if (ctx.keys.email) params.set("de", ctx.keys.email);
+          const { text: body } = await request("GET", `https://api.mymemory.translated.net/get?${params}`, {
+            timeout: 20000,
+          });
+          const data = JSON.parse(body);
+          const status = Number(data?.responseStatus);
+          if (status !== 200 || data?.quotaFinished) {
+            throw cloudError(
+              "MyMemory",
+              data?.quotaFinished || status === 429 ? "QuotaExceeded" : status,
+              data?.responseDetails || data?.responseData?.translatedText,
+            );
+          }
+          pieces.push(data?.responseData?.translatedText || "");
+        }
+        out.push(rejoin(pieces, ctx.to));
       }
       return out;
     },
