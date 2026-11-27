@@ -28,6 +28,7 @@ import {
   translateToNote,
 } from "./refract/fulltext";
 import { createAnnotation } from "./lens/apps";
+import { ANNOTATION_POPUP_CSS, watchAnnotationPopups } from "./annotationPopup";
 
 import { getItem, toRegularItem } from "../utils/item";
 import { noteReadingEvent } from "./spectrum/reading";
@@ -79,6 +80,9 @@ const READER_CSS = `
 .prism-toolbar-btn { background:none; border:none; cursor:pointer; padding:0; }
 .prism-toolbar-btn svg { width:20px; height:20px; flex:none; }
 `;
+
+/** Everything Prism styles in a reader document, injected as one block. */
+const READER_STYLES = READER_CSS + ANNOTATION_POPUP_CSS;
 
 export function registerReaderIntegration() {
   on("renderTextSelectionPopup", onSelectionPopup);
@@ -148,7 +152,7 @@ function onSelectionPopup(event: any) {
   const { reader, doc, params, append } = event;
   const text: string = params?.annotation?.text || "";
   if (!text.trim()) return;
-  injectStyle(doc, "prism-reader-css", READER_CSS);
+  injectStyle(doc, "prism-reader-css", READER_STYLES);
   const selection = plain(params?.annotation);
   const row = el(doc, "div", { class: "prism-pop" });
 
@@ -319,6 +323,7 @@ function onToolbar(event: any) {
   const { reader, doc, append } = event;
   append(toolbarButton(reader, doc));
   bindReaderKeys(reader, doc);
+  watchAnnotationPopups(reader, doc);
   // A reader is first heard of here; a paper translated before gets its
   // translation back without asking anyone for it.
   if (refractOn()) void restoreReader(reader);
@@ -354,7 +359,7 @@ function bindReaderKeys(reader: any, doc: Document, attempt = 0) {
 
 /** The toolbar button, wired up. Shared by the event and the startup sweep. */
 function toolbarButton(reader: any, doc: Document): HTMLElement {
-  injectStyle(doc, "prism-reader-css", READER_CSS);
+  injectStyle(doc, "prism-reader-css", READER_STYLES);
   // An inline mark rather than a Unicode glyph: the reader's font does not
   // necessarily carry one, and a missing glyph reads as a broken empty button.
   // It also carries Zotero's own .toolbar-button class so size, colour and
@@ -412,6 +417,7 @@ function primeOpenReaders() {
       section.append(toolbarButton(reader, doc));
       slot.append(section);
       bindReaderKeys(reader, doc);
+      watchAnnotationPopups(reader, doc);
       if (refractOn()) void restoreReader(reader);
       Zotero.debug("[Prism] toolbar button added to an already-open reader");
     } catch (e) {

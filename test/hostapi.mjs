@@ -411,6 +411,8 @@ const INTERNAL = new Set([
   "lens.bridgeTimeout",
   "lens.panelFontSize",
   "lens.popupHeight",
+  "lens.annotationPopupHeight",
+  "lens.annotationPopupWidth",
   "lens.popupWidth",
   "lens.profiles",
   "lens.prompts",

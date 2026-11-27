@@ -56,6 +56,8 @@ pref("lens.readerBindMode", "page");
 pref("lens.annotationWriteBack", false);
 pref("lens.popupWidth", 420);
 pref("lens.popupHeight", 0);
+pref("lens.annotationPopupWidth", 0);
+pref("lens.annotationPopupHeight", 0);
 pref("lens.provenance", true);
 
 // ---------------------------------------------------------------- refract (translation)
