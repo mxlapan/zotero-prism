@@ -54,7 +54,7 @@ pref("lens.panelWidth", 420);
 pref("lens.panelFontSize", 14);
 pref("lens.readerBindMode", "page");
 pref("lens.annotationWriteBack", false);
-pref("lens.popupWidth", 380);
+pref("lens.popupWidth", 420);
 pref("lens.popupHeight", 0);
 pref("lens.provenance", true);
 

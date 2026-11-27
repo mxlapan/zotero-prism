@@ -33,7 +33,8 @@ import {
   saveTranslation,
   type Block,
 } from "./saved";
-import { editTranslation, type Anchor } from "./editor";
+import { editTranslation } from "./editor";
+import { rectIn } from "../lens/resultPanel";
 import { escapeHTML, splitSentences } from "../../utils/text";
 import { pageText, pdfApp, pdfDocument, pdfReady, pageViews, unwrap } from "../../utils/reader";
 import { openProgress } from "../../utils/progress";
@@ -1255,7 +1256,7 @@ export function editBlock(reader: any, ref: BlockRef) {
   ) as HTMLElement | null;
   editTranslation({
     win: host,
-    anchor: node ? anchorIn(host, node) : null,
+    anchor: node ? rectIn(host, node) : null,
     original: block.original,
     translated: block.translated,
     machine: block.machine,
@@ -1283,20 +1284,6 @@ function applyEdit(reader: any, ref: BlockRef, text: string) {
 /** The window holding the reader: the main window, or a reader window of its own. */
 function hostWindow(reader: any): Window | null {
   return (reader?._window as Window | undefined) || (Zotero.getMainWindow() as unknown as Window) || null;
-}
-
-/** Where a node in the PDF frame sits, in the coordinates of `host`. */
-function anchorIn(host: Window, node: HTMLElement): Anchor | null {
-  try {
-    const rect = node.getBoundingClientRect();
-    const frame: any = node.ownerDocument.defaultView;
-    const dx = Number(frame.mozInnerScreenX) - Number((host as any).mozInnerScreenX);
-    const dy = Number(frame.mozInnerScreenY) - Number((host as any).mozInnerScreenY);
-    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null;
-    return { left: rect.left + dx, top: rect.top + dy, width: rect.width, height: rect.height };
-  } catch {
-    return null;
-  }
 }
 
 /* ------------------------------------------------ annotations on the translation */

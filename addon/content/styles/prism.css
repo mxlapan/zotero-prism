@@ -741,3 +741,79 @@
   font-size: 11px;
   color: var(--prism-fg-soft);
 }
+
+/* ------------------------------------------------------------ result panel */
+
+.prism-panel.prism-result {
+  min-height: 0;
+  z-index: 2147483050;
+}
+
+.prism-result-quote {
+  margin: 8px 12px 0;
+  padding: 6px 8px;
+  max-height: 72px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: var(--prism-bg-soft);
+  color: var(--prism-fg-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
+}
+
+.prism-result-body {
+  flex: 1;
+  min-height: 60px;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.prism-result-section + .prism-result-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--prism-border);
+}
+
+.prism-result-heading {
+  margin-bottom: 4px;
+  color: var(--prism-fg-soft);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prism-result-text {
+  min-height: 1.6em;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  outline: none;
+  user-select: text;
+  cursor: text;
+}
+
+.prism-result-text[contenteditable="true"]:focus {
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--prism-accent-soft);
+}
+
+.prism-result-text.prism-error {
+  color: #d64d4d;
+}
+
+.prism-result-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px 12px 12px;
+  border-top: 1px solid var(--prism-border);
+}
+
+.prism-result-hint {
+  margin-inline-end: auto;
+  color: var(--prism-fg-soft);
+  font-size: 11px;
+}

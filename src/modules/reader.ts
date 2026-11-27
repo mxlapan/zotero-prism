@@ -7,8 +7,7 @@ import { config } from "../../package.json";
 import { attachReaderShortcuts } from "./keys";
 import { bi } from "../utils/locale";
 import { el, injectStyle } from "../utils/dom";
-import { getPref, setPref } from "../utils/prefs";
-import { renderMarkdown } from "../lib/markdown";
+import { getPref } from "../utils/prefs";
 import { promptsFor, renderPrompt, type PromptDef } from "./lens/prompts";
 import { chat } from "./lens/provider";
 import { translateText } from "./refract/engines";
@@ -32,7 +31,8 @@ import { createAnnotation } from "./lens/apps";
 
 import { getItem, toRegularItem } from "../utils/item";
 import { noteReadingEvent } from "./spectrum/reading";
-import { currentPageIndex, pageCount, pdfDocument } from "../utils/reader";
+import { currentPageIndex, pageCount, pageViews, pdfDocument } from "../utils/reader";
+import { openResultPanel, rectIn, type ResultAction, type ResultPanel } from "./lens/resultPanel";
 import { showFailure } from "../utils/progress";
 
 const handlers: Array<[string, any]> = [];
@@ -50,24 +50,12 @@ const PRISM_MARK = `<svg xmlns="${SVG_NS}" viewBox="0 0 16 16" width="20" height
 </svg>`;
 
 const READER_CSS = `
-.prism-pop { display:flex; flex-wrap:wrap; gap:4px; padding:4px 0 2px; max-width:330px; }
-.prism-pop button, .prism-pop-actions button {
+.prism-pop { display:flex; flex-wrap:wrap; align-items:center; gap:4px; padding:4px 0 2px; }
+.prism-pop button {
   border:1px solid rgba(127,127,127,.35); background:transparent; color:inherit;
   border-radius:6px; padding:2px 8px; font-size:12px; cursor:pointer;
 }
-.prism-pop button:hover, .prism-pop-actions button:hover { background:rgba(46,127,212,.16); }
-.prism-pop-actions button:disabled { opacity:.5; cursor:default; }
-.prism-pop-out {
-  box-sizing:border-box; margin-top:5px; overflow:auto;
-  min-width:180px; min-height:48px; max-width:90vw;
-  font-size:12.5px; line-height:1.55; border-top:1px solid rgba(127,127,127,.25);
-  padding:5px 2px 2px; white-space:pre-wrap;
-  user-select:text; cursor:text; outline:none;
-  /* Drag the corner to resize; the size is kept for next time. */
-  resize:both;
-}
-.prism-pop-actions { display:flex; gap:4px; justify-content:flex-end; padding-top:6px; }
-.prism-pop-out p { margin:.3em 0; }
+.prism-pop button:hover { background:rgba(46,127,212,.16); }
 .prism-menu {
   position:absolute; z-index:2147483000; min-width:210px; padding:4px;
   background:var(--material-sidepane,#fff); color:var(--fill-primary,#111);
@@ -162,110 +150,60 @@ function onSelectionPopup(event: any) {
   if (!text.trim()) return;
   injectStyle(doc, "prism-reader-css", READER_CSS);
   const selection = plain(params?.annotation);
-
-  const container = el(doc, "div", { class: "prism-pop-wrap" });
   const row = el(doc, "div", { class: "prism-pop" });
-  // Editable, which is also what makes it selectable: the reader cancels the
-  // press that would start a selection anywhere but in inputs and editable
-  // text. What is saved or copied is what the box holds, edits included.
-  const output = el(doc, "div", {
-    class: "prism-pop-out",
-    style: { display: "none" },
-    attrs: { contenteditable: "true", spellcheck: "false" },
-  });
-  const width = Number(getPref("lens.popupWidth", 380)) || 380;
-  const height = Number(getPref("lens.popupHeight", 0)) || 0;
-  output.style.width = `${width}px`;
-  if (height) {
-    output.style.height = `${height}px`;
-    output.style.maxHeight = "80vh";
-  } else {
-    output.style.maxHeight = "260px";
-  }
 
-  const copy = el(doc, "button", { text: bi("Copy", "复制") }) as HTMLButtonElement;
-  const keep = el(doc, "button", { text: bi("Save as annotation", "存为批注") }) as HTMLButtonElement;
-  const actions = el(doc, "div", { class: "prism-pop-actions", style: { display: "none" } }, copy, keep);
+  /** "Save as annotation": a highlight on the selection, commented with the result. */
+  const saveAction = (): ResultAction => {
+    let saved: Zotero.Item | null = null;
+    return {
+      label: bi("Save as annotation", "存为批注"),
+      run: async (texts) => {
+        const comment = texts.join("\n\n").trim();
+        const attachment = getItem(reader.itemID);
+        if (!comment || !attachment) return;
+        const existing = saved && (Zotero.Items.get(saved.id) as Zotero.Item | false);
+        if (existing && !existing.deleted) {
+          existing.annotationComment = comment;
+          await existing.saveTx();
+        } else {
+          saved = await createAnnotation(attachment, {
+            pageIndex: Number(selection?.position?.pageIndex ?? currentPage(reader)),
+            rects: selection?.position?.rects,
+            nextPageRects: selection?.position?.nextPageRects,
+            sortIndex: selection?.sortIndex,
+            pageLabel: selection?.pageLabel,
+            quote: text,
+            comment,
+            color: "#a28ae5",
+            tags: ["prism/answer"],
+          });
+        }
+        return bi("Saved · click to update", "已存为批注 · 再点更新");
+      },
+    };
+  };
 
-  /** The annotation this answer was saved as; saving again updates it. */
-  let saved: Zotero.Item | null = null;
-  const popup = () => container.closest(".selection-popup") as HTMLElement | null;
-  const show = (html: string, done = false) => {
-    output.style.display = "block";
-    output.innerHTML = html;
-    actions.style.display = done ? "flex" : "none";
-    // Zotero caps this popup at 198px, which left the answer a column of
-    // three or four words; the cap goes once there is an answer to read.
-    const box = popup();
-    if (box) {
-      box.style.maxWidth = "none";
-      keepInView(box);
-    }
+  // Results open in a panel beside the popup, in the window that holds the
+  // reader; see resultPanel.ts for why not inside the popup.
+  const open = (title: string, save: ResultAction) => {
+    const host = hostWindow(reader);
+    const popup = (row.closest(".selection-popup") as Element | null) || row;
+    return openResultPanel({
+      win: host,
+      title,
+      quote: text,
+      near: rectIn(host, popup),
+      actions: [copyAction(), save],
+    });
   };
-  const start = () => {
-    saved = null;
-    keep.disabled = false;
-    keep.textContent = bi("Save as annotation", "存为批注");
-  };
-  const save = async () => {
-    const comment = output.innerText.trim();
-    const attachment = getItem(reader.itemID);
-    if (!comment || !attachment) return;
-    keep.disabled = true;
-    try {
-      const existing = saved && (Zotero.Items.get(saved.id) as Zotero.Item | false);
-      if (existing && !existing.deleted) {
-        existing.annotationComment = comment;
-        await existing.saveTx();
-      } else {
-        saved = await createAnnotation(attachment, {
-          pageIndex: Number(selection?.position?.pageIndex ?? currentPage(reader)),
-          rects: selection?.position?.rects,
-          nextPageRects: selection?.position?.nextPageRects,
-          sortIndex: selection?.sortIndex,
-          pageLabel: selection?.pageLabel,
-          quote: text,
-          comment,
-          color: "#a28ae5",
-          tags: ["prism/answer"],
-        });
-      }
-      keep.textContent = bi("Saved · click to update", "已存为批注 · 再点更新");
-    } catch (e) {
-      keep.textContent = bi("Save as annotation", "存为批注");
-      showFailure(e, bi("Save as annotation", "存为批注"));
-    } finally {
-      keep.disabled = false;
-    }
-  };
-  keep.addEventListener("click", () => void save());
-  copy.addEventListener("click", () => {
-    new ztoolkit.Clipboard().addText(output.innerText.trim(), "text/plain").copy();
-    copy.textContent = bi("Copied", "已复制");
-    doc.defaultView?.setTimeout(() => {
-      copy.textContent = bi("Copy", "复制");
-    }, 1200);
-  });
-
-  // The size the box is dragged to is the size it opens at next time.
-  const remember = () => {
-    if (!output.isConnected) {
-      doc.removeEventListener("mouseup", remember, true);
-      return;
-    }
-    const w = Math.round(parseFloat(output.style.width) || 0);
-    const h = Math.round(parseFloat(output.style.height) || 0);
-    if (w && w !== width) setPref("lens.popupWidth", w);
-    if (h && h !== height) setPref("lens.popupHeight", h);
-    const box = popup();
-    if (box) keepInView(box);
-  };
-  doc.addEventListener("mouseup", remember, true);
 
   const ask = async (prompt: PromptDef) => {
-    start();
-    const answer = await runPrompt(prompt, text, reader, show);
-    if (answer && getPref<boolean>("lens.annotationWriteBack", false)) await save();
+    const save = saveAction();
+    const panel = open(prompt.name, save);
+    const answer = await runPrompt(prompt, text, reader, panel);
+    if (answer && !panel.closed && getPref<boolean>("lens.annotationWriteBack", false)) {
+      await save.run(panel.texts());
+    }
   };
 
   if (refractOn()) row.append(
@@ -273,12 +211,13 @@ function onSelectionPopup(event: any) {
       text: bi("Translate", "翻译"),
       on: {
         click: async () => {
-          start();
-          show(`<p>${bi("translating…", "正在翻译…")}</p>`);
+          const panel = open(bi("Translation", "翻译"), saveAction());
+          panel.status(bi("Translating…", "正在翻译…"));
           try {
-            show(`<p>${escape(await translateText(text))}</p>`, true);
+            panel.show(0, await translateText(text), "text");
+            panel.finish();
           } catch (e: any) {
-            show(`<p style="color:#d64d4d">${escape(String(e?.message || e))}</p>`);
+            panel.fail(String(e?.message || e));
           }
         },
       },
@@ -306,7 +245,7 @@ function onSelectionPopup(event: any) {
           if (!question) return;
           void ask({
             id: "ad-hoc",
-            name: "ask",
+            name: bi("Ask", "追问"),
             scope: ["selection"],
             context: "selection",
             body: `Passage:\n\${P.selection}\n\nQuestion: ${question}`,
@@ -316,8 +255,7 @@ function onSelectionPopup(event: any) {
     }),
   );
 
-  container.append(row, output, actions);
-  append(container);
+  append(row);
 }
 
 /** A plain copy of what the reader hands over, or null. */
@@ -329,42 +267,29 @@ function plain(value: any): any {
   }
 }
 
-/**
- * Keep a popup that has grown inside the view. Zotero places it once, for
- * the size it had then; an answer or a resize makes it larger afterwards.
- */
-function keepInView(popup: HTMLElement) {
-  const area = popup.parentElement?.getBoundingClientRect();
-  if (!area) return;
-  const box = popup.getBoundingClientRect();
-  const pad = 8;
-  let dx = 0;
-  let dy = 0;
-  if (box.right > area.right - pad) dx = area.right - pad - box.right;
-  if (box.left + dx < area.left + pad) dx = area.left + pad - box.left;
-  if (box.bottom > area.bottom - pad) dy = area.bottom - pad - box.bottom;
-  if (box.top + dy < area.top + pad) dy = area.top + pad - box.top;
-  if (!dx && !dy) return;
-  const at = /translate\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px\s*\)/.exec(popup.style.transform || "");
-  if (!at) return;
-  popup.style.transform = `translate(${Number(at[1]) + dx}px, ${Number(at[2]) + dy}px)`;
+/** The window that holds the reader: the main window, or a reader window of its own. */
+function hostWindow(reader: any): Window {
+  return (reader?._window as Window | undefined) || (Zotero.getMainWindow() as unknown as Window);
 }
 
-function escape(text: string) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+function copyAction(): ResultAction {
+  return {
+    label: bi("Copy", "复制"),
+    run: (texts) => {
+      new ztoolkit.Clipboard().addText(texts.join("\n\n").trim(), "text/plain").copy();
+      return bi("Copied", "已复制");
+    },
+  };
 }
 
-/** Stream an answer into the popup; resolves to it, or to null on failure. */
+/** Stream an answer into a result panel; resolves to it, or to null on failure. */
 async function runPrompt(
   prompt: PromptDef,
   selection: string,
   reader: any,
-  show: (html: string, done?: boolean) => void,
+  panel: ResultPanel,
 ): Promise<string | null> {
-  show(`<p>${bi("thinking…", "思考中…")}</p>`);
+  panel.status(bi("Thinking…", "思考中…"));
   try {
     const item = toRegularItem(getItem(reader.itemID));
     const rendered = await renderPrompt(prompt, { selection, item });
@@ -372,13 +297,14 @@ async function runPrompt(
     await chat([{ role: "user", content: rendered.text }], {
       onToken: (_delta, whole) => {
         answer = whole;
-        show(renderMarkdown(whole));
+        panel.show(0, whole);
       },
     });
-    show(renderMarkdown(answer), true);
+    panel.show(0, answer);
+    panel.finish();
     return answer;
   } catch (e: any) {
-    show(`<p style="color:#d64d4d">${escape(String(e?.message || e))}</p>`);
+    panel.fail(String(e?.message || e));
     return null;
   }
 }
@@ -767,32 +693,113 @@ async function annotationsOf(reader: any, keys: string[]): Promise<Zotero.Item[]
   }
 }
 
-async function explainAnnotations(reader: any, keys: string[]) {
-  const annotations = await annotationsOf(reader, keys);
-  const text = annotations
-    .map((a) => `${a.annotationText || ""} ${a.annotationComment || ""}`)
-    .join("\n\n");
-  if (!text.trim()) return;
-  const answer = await chat([
-    {
-      role: "user",
-      content: `Explain these highlighted passages in plain language and say why a researcher would mark them.\n\n${text}`,
+function sourceOf(annotation: Zotero.Item): string {
+  return (annotation.annotationText || annotation.annotationComment || "").trim();
+}
+
+/**
+ * "Add to annotation": append each section's text to its annotations'
+ * comments. Clicking again replaces what the first click added instead of
+ * adding it twice, so an edit made after writing can still go in.
+ */
+function writeAction(targets: Zotero.Item[][]): ResultAction {
+  const before = new Map<Zotero.Item, string>();
+  return {
+    label: bi("Add to annotation", "写入标注"),
+    run: async (texts) => {
+      for (const [index, annotations] of targets.entries()) {
+        const text = (texts[index] || "").trim();
+        if (!text) continue;
+        for (const annotation of annotations) {
+          if (!before.has(annotation)) before.set(annotation, annotation.annotationComment || "");
+          const original = before.get(annotation)!.trim();
+          annotation.annotationComment = original ? `${original}\n\n${text}` : text;
+          await annotation.saveTx();
+        }
+      }
+      return bi("Added · click to update", "已写入标注 · 再点更新");
     },
-  ]);
-  for (const annotation of annotations) {
-    annotation.annotationComment = `${annotation.annotationComment || ""}\n\n[Prism] ${answer}`.trim();
-    await annotation.saveTx();
+  };
+}
+
+/** Where the first annotation is, when its page is on screen. */
+function annotationRect(reader: any, host: Window, annotation: Zotero.Item | undefined) {
+  try {
+    const position = JSON.parse(annotation?.annotationPosition || "{}");
+    const box = position.rects?.[0];
+    const pageView = pageViews(reader)[Number(position.pageIndex)];
+    if (!box || !pageView?.div || !pageView.viewport) return null;
+    const t = pageView.viewport.transform;
+    const x1 = t[0] * box[0] + t[2] * box[1] + t[4];
+    const y1 = t[1] * box[0] + t[3] * box[1] + t[5];
+    const x2 = t[0] * box[2] + t[2] * box[3] + t[4];
+    const y2 = t[1] * box[2] + t[3] * box[3] + t[5];
+    const page = rectIn(host, pageView.div);
+    if (!page) return null;
+    const rect = {
+      left: page.left + Math.min(x1, x2),
+      top: page.top + Math.min(y1, y2),
+      width: Math.abs(x2 - x1),
+      height: Math.abs(y2 - y1),
+    };
+    return rect.top + rect.height < 0 || rect.top > host.innerHeight ? null : rect;
+  } catch {
+    return null;
   }
 }
 
+const EXPLAIN_FALLBACK: PromptDef = {
+  id: "explain",
+  name: "explain",
+  scope: ["selection"],
+  context: "selection",
+  body: "Explain this passage in plain language and say why a researcher would mark it.\n\n${P.selection}",
+};
+
+async function explainAnnotations(reader: any, keys: string[]) {
+  const annotations = (await annotationsOf(reader, keys)).filter((a) => sourceOf(a));
+  if (!annotations.length) return;
+  const quote = annotations.map(sourceOf).join("\n\n");
+  const host = hostWindow(reader);
+  // The selection popup's "explain" prompt, so the wording and the reply
+  // language follow the user's prompt settings here too.
+  const prompt = promptsFor("selection").find((p) => p.id === "explain") || EXPLAIN_FALLBACK;
+  const panel = openResultPanel({
+    win: host,
+    title: bi("Explain annotation", "解释标注"),
+    quote,
+    near: annotationRect(reader, host, annotations[0]),
+    actions: [copyAction(), writeAction([annotations])],
+  });
+  await runPrompt(prompt, quote, reader, panel);
+}
+
 async function translateAnnotations(reader: any, keys: string[]) {
-  const annotations = await annotationsOf(reader, keys);
-  for (const annotation of annotations) {
-    const source = annotation.annotationText || annotation.annotationComment || "";
-    if (!source.trim()) continue;
-    const translated = await translateText(source);
-    annotation.annotationComment = `${annotation.annotationComment || ""}\n${translated}`.trim();
-    await annotation.saveTx();
+  const annotations = (await annotationsOf(reader, keys)).filter((a) => sourceOf(a));
+  if (!annotations.length) return;
+  const host = hostWindow(reader);
+  const many = annotations.length > 1;
+  const panel = openResultPanel({
+    win: host,
+    title: bi("Translate annotation", "翻译标注"),
+    quote: many ? undefined : sourceOf(annotations[0]),
+    sections: annotations.map((a) => (many ? sourceOf(a).slice(0, 80) : "")),
+    near: annotationRect(reader, host, annotations[0]),
+    actions: [copyAction(), writeAction(annotations.map((a) => [a]))],
+  });
+  try {
+    for (const [index, annotation] of annotations.entries()) {
+      if (panel.closed) return;
+      panel.status(
+        many
+          ? bi(`Translating ${index + 1}/${annotations.length}…`, `正在翻译 ${index + 1}/${annotations.length}…`)
+          : bi("Translating…", "正在翻译…"),
+      );
+      panel.show(index, await translateText(sourceOf(annotation)), "text");
+    }
+    panel.finish();
+  } catch (e: any) {
+    panel.fail(String(e?.message || e));
   }
 }
 
